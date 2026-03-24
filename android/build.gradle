@@ -1,0 +1,31 @@
+buildscript {
+    ext {
+        buildToolsVersion = "35.0.0"
+        minSdkVersion = 24
+        compileSdkVersion = 35
+        targetSdkVersion = 35
+        ndkVersion = "27.1.12297006"
+        kotlinVersion = "2.1.20"
+        ort_version = "1.17.3"
+    }
+    repositories {
+        google()
+        mavenCentral()
+    }
+    dependencies {
+        classpath("com.android.tools.build:gradle:8.1.1")
+        classpath("com.facebook.react:react-native-gradle-plugin")
+        classpath("org.jetbrains.kotlin:kotlin-gradle-plugin:2.1.20")
+    }
+}
+allprojects {
+    configurations.all {
+        resolutionStrategy.eachDependency { details ->
+            if (details.requested.group == "com.microsoft.onnxruntime") {
+                // paksa gunakan AAR full yg berisi ai.onnx.ml ops
+                details.useTarget("com.microsoft.onnxruntime:onnxruntime-android:${ort_version}")
+            }
+        }
+    }
+}
+apply plugin: "com.facebook.react.rootproject"

@@ -1,0 +1,152 @@
+# OSX
+.DS_Store
+
+# Xcode
+build/
+*.pbxuser
+!default.pbxuser
+*.mode1v3
+!default.mode1v3
+*.mode2v3
+!default.mode2v3
+*.perspectivev3
+!default.perspectivev3
+xcuserdata
+*.xccheckout
+*.moved-aside
+DerivedData
+*.hmap
+*.ipa
+*.xcuserstate
+**/.xcode.env.local
+
+# Android / IntelliJ
+build/
+.idea
+.gradle
+local.properties
+*.iml
+*.hprof
+.cxx/
+*.keystore
+!debug.keystore
+.kotlin/
+
+# node.js
+node_modules/
+npm-debug.log
+yarn-error.log
+
+# fastlane
+**/fastlane/report.xml
+**/fastlane/Preview.html
+**/fastlane/screenshots
+**/fastlane/test_output
+
+# Bundle artifact
+*.jsbundle
+
+# Ruby / CocoaPods
+**/Pods/
+/vendor/bundle/
+
+# Metro
+.metro-health-check*
+
+# testing
+/coverage
+
+# Yarn
+.yarn/*
+!.yarn/patches
+!.yarn/plugins
+!.yarn/releases
+!.yarn/sdks
+!.yarn/versions
+
+# =========================
+# Python
+# =========================
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.so
+.python-version
+
+# Virtual environment
+.venv/
+venv/
+env/
+ENV/
+
+# Jupyter / temp
+.ipynb_checkpoints/
+
+# Python logs
+*.log
+
+# Pytest / mypy / caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# =========================
+# Environment / secrets
+# =========================
+.env
+.env.*
+*.env
+
+# =========================
+# Server / local runtime files
+# =========================
+server_federated/.venv/
+server_federated/__pycache__/
+
+# =========================
+# Model training artifacts (optional)
+# Uncomment if these are only temporary outputs
+# =========================
+# *.h5
+# *.pt
+# *.pth
+# *.ckpt
+# *.joblib
+# *.pkl
+
+# =========================
+# React Native local files
+# =========================
+*.tmp
+*.swp
+*.swo
+*~
+
+# =========================
+# Keep important ML assets tracked
+# Do NOT ignore these if app needs them
+# =========================
+# assets/ml/*.onnx
+# assets/ml/*.json
+
+
+# Python env
+.venv/
+venv/
+env/
+ENV/
+server_federated/fl_env/
+
+# Python cache
+__pycache__/
+*.pyc
+
+# React Native
+node_modules/
+
+# Local IDE/build
+.idea/
+android/build/
+ios/build/
+.gradle/
