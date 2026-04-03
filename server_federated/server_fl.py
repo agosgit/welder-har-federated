@@ -22,10 +22,10 @@ MODEL_DIR = "models"
 MODEL_VERSION_FILE = "model_version.txt"
 LOG_FILE = "retrain_log.json"
 
-RETRAIN_INTERVAL = 300        # retrain tiap 5 menit
+RETRAIN_INTERVAL = 30        # retrain tiap 1 menit
 MAX_BUFFER_SIZE = 300         # simpan max 300 feedback terakhir
-MIN_FEEDBACK_TO_TRAIN = 30    # mulai retrain kalau ada >=30 data
-
+MIN_FEEDBACK_TO_TRAIN = 10    # mulai retrain kalau ada >=20 data
+feedback_lock = threading.Lock()
 os.makedirs(MODEL_DIR, exist_ok=True)
 
 # ====== MUAT MODEL GLOBAL AWAL ======
