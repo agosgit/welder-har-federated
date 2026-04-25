@@ -1,5 +1,6 @@
 package com.awesomeproject
 import com.awesomeproject.sensorrecorder.SensorRecorderPackage;
+import com.awesomeproject.fltrainer.FLTrainerPackage
 
 import android.app.Application
 import com.facebook.react.PackageList
@@ -20,6 +21,7 @@ class MainApplication : Application(), ReactApplication {
               // Packages that cannot be autolinked yet can be added manually here, for example:
               // add(MyReactNativePackage())
               add(SensorRecorderPackage())
+              add(FLTrainerPackage())
             }
 
         override fun getJSMainModuleName(): String = "index"
