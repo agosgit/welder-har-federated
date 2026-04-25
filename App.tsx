@@ -25,7 +25,6 @@ import { RealtimeSampler, type Window as MLWindow } from './src/har/sampler';
 // import { loadSession, predictWindow } from './src/har/predictor';
 import { loadSession, predictWindow, benchmarkModel } from './src/har/pipeline';
 
-// === LABELS (urutan persis LabelEncoder)
 import labelsJson from './assets/ml/labels.json';
 
 import FeedbackSection from './src/components/FeedbackSection';
@@ -37,6 +36,10 @@ import LiveSensorCharts from './src/components/LiveSensorCharts';
 
 // import { performance } from 'react-native-performance';
 import performance from 'react-native-performance';
+import { getLocalSampleCount } from './src/har/localDataset';
+import { trainLocalModelNative, exportLocalModelWeights } from './src/har/localTrainer';
+import { requestGlobalModel, getCurrentModelVersion, sendLocalModel } from './src/har/flClient';
+import { ensureFLAssets } from "./src/har/bootstrapFLAssets";
 
 const RAW_LABELS: string[] = (labelsJson as any)?.classes ?? [];
 const toPretty = (s: string) => s.replace(/_/g, ' ').trim().replace(/\b\w/g, c => c.toUpperCase());
@@ -122,10 +125,10 @@ function SamplingScreen() {
   const accDispRef = useRef({ x: 0, y: 0, z: 0 });
   const gyrDispRef = useRef({ x: 0, y: 0, z: 0 });
   const magDispRef = useRef({ x: 0, y: 0, z: 0 });
-const [hz, setHz] = useState({ acc: 0, gyr: 0, mag: 0 });
-const [accDisp, setAccDisp] = useState({ x: 0, y: 0, z: 0 });
-const [gyrDisp, setGyrDisp] = useState({ x: 0, y: 0, z: 0 });
-const [magDisp, setMagDisp] = useState({ x: 0, y: 0, z: 0 });
+  const [hz, setHz] = useState({ acc: 0, gyr: 0, mag: 0 });
+  const [accDisp, setAccDisp] = useState({ x: 0, y: 0, z: 0 });
+  const [gyrDisp, setGyrDisp] = useState({ x: 0, y: 0, z: 0 });
+  const [magDisp, setMagDisp] = useState({ x: 0, y: 0, z: 0 });
 
 
   const [lastPath, setLastPath] = useState<string | null>(null);
@@ -163,16 +166,16 @@ const [magDisp, setMagDisp] = useState({ x: 0, y: 0, z: 0 });
     });
     return () => { sub1.remove(); sub2.remove(); };
   }, [rate.hz, durationSec]);
-useEffect(() => {
-  const interval = setInterval(() => {
-    setHz({ ...hzRef.current });
-    setAccDisp({ ...accDispRef.current });
-    setGyrDisp({ ...gyrDispRef.current });
-    setMagDisp({ ...magDispRef.current });
-  }, 150); // update UI tiap 150ms (6–7 FPS)
+  useEffect(() => {
+    const interval = setInterval(() => {
+      setHz({ ...hzRef.current });
+      setAccDisp({ ...accDispRef.current });
+      setGyrDisp({ ...gyrDispRef.current });
+      setMagDisp({ ...magDispRef.current });
+    }, 150); // update UI tiap 150ms (6–7 FPS)
 
-  return () => clearInterval(interval);
-}, []);
+    return () => clearInterval(interval);
+  }, []);
 
   const start = async () => {
     if (running) return;
@@ -207,105 +210,105 @@ useEffect(() => {
 
   return (
     <SafeAreaView style={styles.safeArea}>
-    <ScrollView style={styles.screen} contentContainerStyle={{ paddingBottom: 100 }}>
-      <View style={styles.headerRow}><Text style={styles.title}>Sampling</Text><Pill text={running ? 'Recording' : 'Idle'} tone={running ? 'good' : 'default'} /></View>
-      <View style={styles.grid2}>
-        <Card title="Rekam CSV">
-          <View style={styles.controlsRow}>
-            <View style={styles.pickerBox}><Text style={styles.label}>Rate</Text>
-              <Picker enabled={!running} selectedValue={rate.hz} onValueChange={(v) => setRate(RATES.find(r => r.hz === v)!)} >
-                {RATES.map(r => <Picker.Item key={r.hz} label={`${r.hz} Hz`} value={r.hz} />)}
-              </Picker>
-            </View>
-            <View style={styles.pickerBox}>
-              <Text style={styles.label}>Mode</Text>
-              <Picker
-                enabled={!running}
-                selectedValue={manualMode ? 'manual' : 'auto'}
-                onValueChange={(v) => setManualMode(v === 'manual')}
-              >
-                <Picker.Item label="Auto (berdasarkan durasi)" value="auto" />
-                <Picker.Item label="Manual (start/stop bebas)" value="manual" />
-              </Picker>
-            </View>
-
-            {!manualMode && (
-              <View style={styles.pickerBox}>
-                <Text style={styles.label}>Durasi</Text>
-                <Picker
-                  enabled={!running}
-                  selectedValue={durationSec}
-                  onValueChange={(v) => setDurationSec(v)}
-                >
-                  {DURATIONS.map((d) => (
-                    <Picker.Item key={d} label={`${d} s`} value={d} />
-                  ))}
+      <ScrollView style={styles.screen} contentContainerStyle={{ paddingBottom: 100 }}>
+        <View style={styles.headerRow}><Text style={styles.title}>Sampling</Text><Pill text={running ? 'Recording' : 'Idle'} tone={running ? 'good' : 'default'} /></View>
+        <View style={styles.grid2}>
+          <Card title="Rekam CSV">
+            <View style={styles.controlsRow}>
+              <View style={styles.pickerBox}><Text style={styles.label}>Rate</Text>
+                <Picker enabled={!running} selectedValue={rate.hz} onValueChange={(v) => setRate(RATES.find(r => r.hz === v)!)} >
+                  {RATES.map(r => <Picker.Item key={r.hz} label={`${r.hz} Hz`} value={r.hz} />)}
                 </Picker>
               </View>
-            )}
+              <View style={styles.pickerBox}>
+                <Text style={styles.label}>Mode</Text>
+                <Picker
+                  enabled={!running}
+                  selectedValue={manualMode ? 'manual' : 'auto'}
+                  onValueChange={(v) => setManualMode(v === 'manual')}
+                >
+                  <Picker.Item label="Auto (berdasarkan durasi)" value="auto" />
+                  <Picker.Item label="Manual (start/stop bebas)" value="manual" />
+                </Picker>
+              </View>
 
-            <View style={styles.pickerBoxFull}><Text style={styles.label}>Label Aktivitas</Text>
-              <Picker enabled={!running} selectedValue={label} onValueChange={(v) => setLabel(v)}>
-                {(['berdiri_tidak_aktif', 'berdiri_aktif', 'duduk_tidak_aktif', 'duduk_aktif', 'berbaring_tidak_aktif', 'berbaring_aktif'] as Label[])
-                  .map(l => <Picker.Item key={l} label={toPretty(l)} value={l} />)}
-              </Picker>
+              {!manualMode && (
+                <View style={styles.pickerBox}>
+                  <Text style={styles.label}>Durasi</Text>
+                  <Picker
+                    enabled={!running}
+                    selectedValue={durationSec}
+                    onValueChange={(v) => setDurationSec(v)}
+                  >
+                    {DURATIONS.map((d) => (
+                      <Picker.Item key={d} label={`${d} s`} value={d} />
+                    ))}
+                  </Picker>
+                </View>
+              )}
+
+              <View style={styles.pickerBoxFull}><Text style={styles.label}>Label Aktivitas</Text>
+                <Picker enabled={!running} selectedValue={label} onValueChange={(v) => setLabel(v)}>
+                  {(['berdiri_tidak_aktif', 'berdiri_aktif', 'duduk_tidak_aktif', 'duduk_aktif', 'berbaring_tidak_aktif', 'berbaring_aktif'] as Label[])
+                    .map(l => <Picker.Item key={l} label={toPretty(l)} value={l} />)}
+                </Picker>
+              </View>
             </View>
-          </View>
 
-          <View style={styles.actionsRow}>
-            <PrimaryButton title={running ? 'Stop' : `Start (${durationSec}s)`} onPress={running ? stop : start} />
-            <GhostButton title="Share CSV" disabled={!canShare} onPress={async () => {
-              try {
-                if (!canShare) { ToastAndroid.show('Belum ada file', ToastAndroid.SHORT); return; }
-                if (SensorRecorder.shareLast) await SensorRecorder.shareLast();
-                else if (lastPath) await Share.open({ url: 'file://' + lastPath, type: 'text/csv', failOnCancel: false });
-              } catch (e: any) {
-                const msg = String(e?.message ?? e);
-                if (!msg.includes('User did not share')) {
-                  try { ToastAndroid.show('Share gagal: ' + msg, ToastAndroid.LONG); } catch { Alert.alert('Share gagal', msg); }
+            <View style={styles.actionsRow}>
+              <PrimaryButton title={running ? 'Stop' : `Start (${durationSec}s)`} onPress={running ? stop : start} />
+              <GhostButton title="Share CSV" disabled={!canShare} onPress={async () => {
+                try {
+                  if (!canShare) { ToastAndroid.show('Belum ada file', ToastAndroid.SHORT); return; }
+                  if (SensorRecorder.shareLast) await SensorRecorder.shareLast();
+                  else if (lastPath) await Share.open({ url: 'file://' + lastPath, type: 'text/csv', failOnCancel: false });
+                } catch (e: any) {
+                  const msg = String(e?.message ?? e);
+                  if (!msg.includes('User did not share')) {
+                    try { ToastAndroid.show('Share gagal: ' + msg, ToastAndroid.LONG); } catch { Alert.alert('Share gagal', msg); }
+                  }
                 }
-              }
-            }} />
-          </View>
+              }} />
+            </View>
 
-          <Text style={styles.metaText}>Samples: {count} @ {rate.hz}Hz</Text>
-          {validation && (
-            <View style={styles.validationBox}>
-              <Text style={styles.validationText}>
-                Actual {validation.actual} vs Expected {validation.expected}{'\n'}
-                Durasi {validation.durationSec}s · Effective {validation.effectiveHz} Hz · Δ {validation.deviationPct}%
-              </Text>
-            </View>
-          )}
-        </Card>
+            <Text style={styles.metaText}>Samples: {count} @ {rate.hz}Hz</Text>
+            {validation && (
+              <View style={styles.validationBox}>
+                <Text style={styles.validationText}>
+                  Actual {validation.actual} vs Expected {validation.expected}{'\n'}
+                  Durasi {validation.durationSec}s · Effective {validation.effectiveHz} Hz · Δ {validation.deviationPct}%
+                </Text>
+              </View>
+            )}
+          </Card>
 
-        <Card title="Live Sensors">
-          <View style={styles.cardsRow}>
-            <View style={styles.sensorCol}>
-              <Text style={styles.cardKicker}>Accelerometer · {hz.acc.toFixed(1)} Hz</Text>
-              <Text style={styles.cardVal}>x: {fmt(accDisp.x)}</Text><Text style={styles.cardVal}>y: {fmt(accDisp.y)}</Text><Text style={styles.cardVal}>z: {fmt(accDisp.z)}</Text>
+          <Card title="Live Sensors">
+            <View style={styles.cardsRow}>
+              <View style={styles.sensorCol}>
+                <Text style={styles.cardKicker}>Accelerometer · {hz.acc.toFixed(1)} Hz</Text>
+                <Text style={styles.cardVal}>x: {fmt(accDisp.x)}</Text><Text style={styles.cardVal}>y: {fmt(accDisp.y)}</Text><Text style={styles.cardVal}>z: {fmt(accDisp.z)}</Text>
+              </View>
+              <View style={styles.sensorCol}>
+                <Text style={styles.cardKicker}>Gyroscope · {hz.gyr.toFixed(1)} Hz</Text>
+                <Text style={styles.cardVal}>x: {fmt(gyrDisp.x)}</Text><Text style={styles.cardVal}>y: {fmt(gyrDisp.y)}</Text><Text style={styles.cardVal}>z: {fmt(gyrDisp.z)}</Text>
+              </View>
+              <View style={styles.sensorCol}>
+                <Text style={styles.cardKicker}>Magnetometer · {hz.mag.toFixed(1)} Hz</Text>
+                <Text style={styles.cardVal}>x: {fmt(magDisp.x)}</Text><Text style={styles.cardVal}>y: {fmt(magDisp.y)}</Text><Text style={styles.cardVal}>z: {fmt(magDisp.z)}</Text>
+              </View>
             </View>
-            <View style={styles.sensorCol}>
-              <Text style={styles.cardKicker}>Gyroscope · {hz.gyr.toFixed(1)} Hz</Text>
-              <Text style={styles.cardVal}>x: {fmt(gyrDisp.x)}</Text><Text style={styles.cardVal}>y: {fmt(gyrDisp.y)}</Text><Text style={styles.cardVal}>z: {fmt(gyrDisp.z)}</Text>
-            </View>
-            <View style={styles.sensorCol}>
-              <Text style={styles.cardKicker}>Magnetometer · {hz.mag.toFixed(1)} Hz</Text>
-              <Text style={styles.cardVal}>x: {fmt(magDisp.x)}</Text><Text style={styles.cardVal}>y: {fmt(magDisp.y)}</Text><Text style={styles.cardVal}>z: {fmt(magDisp.z)}</Text>
-            </View>
-          </View>
-        </Card>
-        <Card title="Live Sensors">
-          <LiveSensorCharts
-            hz={hz}
-            accDisp={accDisp}
-            gyrDisp={gyrDisp}
-            magDisp={magDisp}
-          />
-        </Card>
+          </Card>
+          <Card title="Live Sensors">
+            <LiveSensorCharts
+              hz={hz}
+              accDisp={accDisp}
+              gyrDisp={gyrDisp}
+              magDisp={magDisp}
+            />
+          </Card>
 
-      </View>
-    </ScrollView>
+        </View>
+      </ScrollView>
     </SafeAreaView>
   );
 }
@@ -326,9 +329,9 @@ function PredictScreen() {
   const [probs, setProbs] = useState<number[] | null>(null);
   const samplerRef = useRef<RealtimeSampler | null>(null);
   const [currentWindow, setCurrentWindow] = useState<MLWindow | null>(null);
-  const accRef = useRef({x:0,y:0,z:0});
-  const gyrRef = useRef({x:0,y:0,z:0});
-  const magRef = useRef({x:0,y:0,z:0});
+  const accRef = useRef({ x: 0, y: 0, z: 0 });
+  const gyrRef = useRef({ x: 0, y: 0, z: 0 });
+  const magRef = useRef({ x: 0, y: 0, z: 0 });
   const hzRef = useRef({ acc: 0, gyr: 0, mag: 0 });
   const [latency, setLatency] = useState({
     buffering: 0,
@@ -337,7 +340,22 @@ function PredictScreen() {
     decision: 0,
     total: 0,
   });
-
+  const [localSampleCount, setLocalSampleCount] = useState(0);
+  const [lastTrainAt, setLastTrainAt] = useState<string | null>(null);
+  const [trainingLocal, setTrainingLocal] = useState(false);
+  const [syncingModel, setSyncingModel] = useState(false);
+  useEffect(() => {
+    (async () => {
+      try {
+        await ensureFLAssets();
+        await loadSession();
+        setModelReady(true);
+      } catch (e: any) {
+        setModelReady(false);
+        Alert.alert("Init gagal", String(e?.message ?? e));
+      }
+    })();
+  }, []);
 
   useEffect(() => {
     (async () => {
@@ -353,20 +371,20 @@ function PredictScreen() {
       Alert.alert('Error', String(e?.message ?? e));
     }
   };
-useEffect(() => {
-   const t = setInterval(() => {
-      setAccDisp({...accRef.current});
-      setGyrDisp({...gyrRef.current});
-      setMagDisp({...magRef.current});
-   }, 150);
-   return () => clearInterval(t);
-}, []);
-useEffect(() => {
-   const t = setInterval(() => {
+  useEffect(() => {
+    const t = setInterval(() => {
+      setAccDisp({ ...accRef.current });
+      setGyrDisp({ ...gyrRef.current });
+      setMagDisp({ ...magRef.current });
+    }, 150);
+    return () => clearInterval(t);
+  }, []);
+  useEffect(() => {
+    const t = setInterval(() => {
       setHz({ ...hzRef.current });  // update UI 5 FPS
-   }, 200);
-   return () => clearInterval(t);
-}, []);
+    }, 200);
+    return () => clearInterval(t);
+  }, []);
 
   useEffect(() => {
     if (!(modelReady && inferOn && rate.hz === 50)) {
@@ -376,74 +394,86 @@ useEffect(() => {
     samplerRef.current = new RealtimeSampler({
       fs: 50, windowSec: 2, overlap: 0.5,
       onWindow: async (win: MLWindow) => {
-  try {
-    setCurrentWindow(win);
-    const bufferingMs = 1000; // window 2s overlap 50%
+        try {
+          setCurrentWindow(win);
+          const bufferingMs = 1000; // window 2s overlap 50%
 
-    // ================= PREPROCESSING =================
-    const tPre0 = performance.now();
+          // ================= PREPROCESSING =================
+          const tPre0 = performance.now();
 
-    const processed = win; // kalau belum ada preprocessing
+          const processed = win; // kalau belum ada preprocessing
 
-    const preprocessingMs = performance.now() - tPre0;
+          const preprocessingMs = performance.now() - tPre0;
 
-    // ================= INFERENCE =================
-    const tInf0 = performance.now();
+          // ================= INFERENCE =================
+          const tInf0 = performance.now();
 
-    const { classId, conf, probs } = await predictWindow(processed);
+          const { classId, conf, probs } = await predictWindow(processed);
 
-    const inferenceMs = performance.now() - tInf0;
+          const inferenceMs = performance.now() - tInf0;
 
-    // ================= DECISION =================
-    const tDec0 = performance.now();
+          // ================= DECISION =================
+          const tDec0 = performance.now();
 
-    const idx =
-      (classId >= 0 && classId < CLASS_NAMES.length)
-        ? classId
-        : Math.max(0, Math.min(classId - 1, CLASS_NAMES.length - 1));
+          const idx =
+            (classId >= 0 && classId < CLASS_NAMES.length)
+              ? classId
+              : Math.max(0, Math.min(classId - 1, CLASS_NAMES.length - 1));
 
-    const decisionMs = performance.now() - tDec0;
+          const decisionMs = performance.now() - tDec0;
 
-    const totalMs =
-      bufferingMs +
-      preprocessingMs +
-      inferenceMs +
-      decisionMs;
+          const totalMs =
+            bufferingMs +
+            preprocessingMs +
+            inferenceMs +
+            decisionMs;
 
-    setLatency({
-      buffering: bufferingMs,
-      preprocessing: preprocessingMs,
-      inference: inferenceMs,
-      decision: decisionMs,
-      total: totalMs,
-    });
+          setLatency({
+            buffering: bufferingMs,
+            preprocessing: preprocessingMs,
+            inference: inferenceMs,
+            decision: decisionMs,
+            total: totalMs,
+          });
 
-    setPredText(`${CLASS_NAMES[idx]} (${(conf * 100).toFixed(1)}%)`);
-    setProbs(probs);
+          setPredText(`${CLASS_NAMES[idx]} (${(conf * 100).toFixed(1)}%)`);
+          setProbs(probs);
 
-  } catch (e) {
-    setPredText('-');
-    setProbs(null);
-  }
-},
+        } catch (e) {
+          setPredText('-');
+          setProbs(null);
+        }
+      },
 
 
 
       onHz: (h) => {
-    hzRef.current = h;  // simpan di ref, tidak memicu re-render
-},
+        hzRef.current = h;  // simpan di ref, tidak memicu re-render
+      },
 
-          onLatest: (s) => {
-      accRef.current = s.acc;
-      gyrRef.current = s.gyr;
-      magRef.current = s.mag;
-    },
+      onLatest: (s) => {
+        accRef.current = s.acc;
+        gyrRef.current = s.gyr;
+        magRef.current = s.mag;
+      },
 
     });
     samplerRef.current.start();
     return () => { samplerRef.current?.stop(); samplerRef.current = null; };
   }, [modelReady, inferOn, rate.hz]);
 
+  const refreshLocalStats = async () => {
+    try {
+      const count = await getLocalSampleCount();
+      setLocalSampleCount(count);
+    } catch (err) {
+      console.warn("⚠️ Gagal membaca jumlah sample lokal:", err);
+    }
+  };
+
+  useEffect(() => {
+    refreshLocalStats();
+  }, []);
   const probRows = (() => {
     if (!probs || probs.length === 0) return [];
     const pairs = CLASS_NAMES.map((name, i) => ({ name, p: probs[i] ?? 0, i }));
@@ -451,150 +481,232 @@ useEffect(() => {
     return pairs;
   })();
 
-return (
-  <SafeAreaView style={styles.safeArea}>
-    <ScrollView
-      style={styles.screen}
-      contentContainerStyle={{ paddingBottom: 100 }}
-      showsVerticalScrollIndicator={false}
-    >
-      <View style={styles.headerRow}>
-        <Text style={styles.title}>Prediksi</Text>
-        <Pill
-          text={modelReady ? 'Model Ready' : 'Model…'}
-          tone={modelReady ? 'good' : 'warn'}
-        />
-      </View>
+  const handleLocalTrain = async () => {
+    try {
+      setTrainingLocal(true);
 
-      <View style={styles.grid2}>
-        <Card
-          title="Realtime Inference"
-          footer={
-            <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-              <Text style={{ color: '#334155', marginRight: 8 }}>Aktif</Text>
-              <Switch
-                value={inferOn}
-                onValueChange={setInferOn}
+      // 1. train lokal
+      const result = await trainLocalModelNative(2, 4);
+
+      if (!result.success) {
+        Alert.alert(
+          "Training belum jalan",
+          result.message ?? `Sample lokal belum cukup. Sekarang baru ${result.sampleCount} sample.`
+        );
+        return;
+      }
+
+      // 2. export flattened weights dari trainer TFLite
+      const exported = await exportLocalModelWeights();
+
+      if (!exported.success || !Array.isArray(exported.weights) || exported.weights.length === 0) {
+        Alert.alert("Export gagal", "Weights model lokal tidak berhasil diekspor.");
+        return;
+      }
+
+      // 3. kirim ke server FL
+      await sendLocalModel(exported.weights);
+
+      // 4. update UI lokal
+      setLastTrainAt(result.trainedAt ?? new Date().toISOString());
+      await refreshLocalStats();
+
+      Alert.alert(
+        "Local training selesai",
+        `Samples: ${result.sampleCount}\nLoss: ${result.lastLoss ?? "-"}\nWeights sent: ${exported.length}`
+      );
+    } catch (err: any) {
+      Alert.alert("Local training gagal", String(err?.message ?? err));
+    } finally {
+      setTrainingLocal(false);
+    }
+  };
+
+  const handleSyncGlobalModel = async () => {
+    try {
+      setSyncingModel(true);
+      await requestGlobalModel();
+      Alert.alert("Sync model", "Permintaan model global sudah dikirim. Jika server punya versi baru, model ONNX akan diunduh.");
+    } catch (err: any) {
+      Alert.alert("Sync gagal", String(err?.message ?? err));
+    } finally {
+      setSyncingModel(false);
+    }
+  };
+
+  return (
+    <SafeAreaView style={styles.safeArea}>
+      <ScrollView
+        style={styles.screen}
+        contentContainerStyle={{ paddingBottom: 100 }}
+        showsVerticalScrollIndicator={false}
+      >
+        <View style={styles.headerRow}>
+          <Text style={styles.title}>Prediksi</Text>
+          <Pill
+            text={modelReady ? 'Model Ready' : 'Model…'}
+            tone={modelReady ? 'good' : 'warn'}
+          />
+        </View>
+
+        <View style={styles.grid2}>
+          <Card
+            title="Realtime Inference"
+            footer={
+              <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                <Text style={{ color: '#334155', marginRight: 8 }}>Aktif</Text>
+                <Switch
+                  value={inferOn}
+                  onValueChange={setInferOn}
+                  disabled={!modelReady}
+                />
+              </View>
+            }
+          >
+            {rate.hz !== 50 && (
+              <Text
+                style={{
+                  color: '#9A5B00',
+                  backgroundColor: '#FFF4E5',
+                  padding: 8,
+                  borderRadius: 8,
+                  marginBottom: 8,
+                }}
+              >
+                Disarankan 50 Hz agar prediksi akurat.
+              </Text>
+            )}
+
+            <View style={styles.controlsRow}>
+              <View style={styles.pickerBox}>
+                <Text style={styles.label}>Rate</Text>
+                <Picker
+                  selectedValue={rate.hz}
+                  onValueChange={(v) => setRate(RATES.find(r => r.hz === v)!)}
+                >
+                  {RATES.map(r => (
+                    <Picker.Item key={r.hz} label={`${r.hz} Hz`} value={r.hz} />
+                  ))}
+                </Picker>
+              </View>
+            </View>
+
+            <View style={styles.actionsRow}>
+              <PrimaryButton
+                title="Benchmark"
+                onPress={runBenchmark}
                 disabled={!modelReady}
               />
             </View>
-          }
-        >
-          {rate.hz !== 50 && (
-            <Text
-              style={{
-                color: '#9A5B00',
-                backgroundColor: '#FFF4E5',
-                padding: 8,
-                borderRadius: 8,
-                marginBottom: 8,
-              }}
-            >
-              Disarankan 50 Hz agar prediksi akurat.
-            </Text>
-          )}
 
-          <View style={styles.controlsRow}>
-            <View style={styles.pickerBox}>
-              <Text style={styles.label}>Rate</Text>
-              <Picker
-                selectedValue={rate.hz}
-                onValueChange={(v) => setRate(RATES.find(r => r.hz === v)!)}
-              >
-                {RATES.map(r => (
-                  <Picker.Item key={r.hz} label={`${r.hz} Hz`} value={r.hz} />
-                ))}
-              </Picker>
+            <View style={styles.validationBox}>
+              <Text style={[styles.validationText, { fontWeight: '700' }]}>
+                Prediksi
+              </Text>
+              <Text style={[styles.validationText, { marginTop: 4 }]}>
+                {inferOn && modelReady && rate.hz === 50 ? (predText || '-') : '— nonaktif —'}
+              </Text>
+
+              {probRows.length > 0 && (
+                <View style={{ marginTop: 8 }}>
+                  {probRows.map((row) => (
+                    <View
+                      key={row.i}
+                      style={{
+                        flexDirection: 'row',
+                        justifyContent: 'space-between',
+                        paddingVertical: 2,
+                      }}
+                    >
+                      <Text style={{ color: '#0F172A' }}>{row.name}</Text>
+                      <Text style={{ color: '#334155' }}>
+                        {(row.p * 100).toFixed(1)}%
+                      </Text>
+                    </View>
+                  ))}
+                </View>
+              )}
             </View>
-          </View>
+          </Card>
 
-          <View style={styles.actionsRow}>
-            <PrimaryButton
-              title="Benchmark"
-              onPress={runBenchmark}
-              disabled={!modelReady}
-            />
-          </View>
+          <FeedbackSection
+            currentWindowData={currentWindow}
+            onSaved={refreshLocalStats}
+          />
+          <Card title="Federated Learning">
+            <View style={{ marginTop: 8 }}>
+              <Text style={styles.validationText}>
+                Model version: {getCurrentModelVersion() ?? "-"}
+              </Text>
+              <Text style={styles.validationText}>
+                Local samples: {localSampleCount}
+              </Text>
+              <Text style={styles.validationText}>
+                Last local train: {lastTrainAt ?? "-"}
+              </Text>
+            </View>
 
-          <View style={styles.validationBox}>
-            <Text style={[styles.validationText, { fontWeight: '700' }]}>
-              Prediksi
-            </Text>
-            <Text style={[styles.validationText, { marginTop: 4 }]}>
-              {inferOn && modelReady && rate.hz === 50 ? (predText || '-') : '— nonaktif —'}
-            </Text>
+            <View style={styles.actionsRow}>
+              <PrimaryButton
+                title={trainingLocal ? "Training..." : "Train Local Model"}
+                onPress={handleLocalTrain}
+                disabled={trainingLocal}
+              />
+              <GhostButton
+                title={syncingModel ? "Syncing..." : "Sync Global Model"}
+                onPress={handleSyncGlobalModel}
+                disabled={syncingModel}
+              />
+            </View>
+          </Card>
 
-            {probRows.length > 0 && (
-              <View style={{ marginTop: 8 }}>
-                {probRows.map((row) => (
-                  <View
-                    key={row.i}
-                    style={{
-                      flexDirection: 'row',
-                      justifyContent: 'space-between',
-                      paddingVertical: 2,
-                    }}
-                  >
-                    <Text style={{ color: '#0F172A' }}>{row.name}</Text>
-                    <Text style={{ color: '#334155' }}>
-                      {(row.p * 100).toFixed(1)}%
-                    </Text>
-                  </View>
-                ))}
+          <Card title="Model Performance">
+            <View style={{ marginTop: 8 }}>
+              <Text>Model: CNN-LSTM</Text>
+              <Text>Buffering: {latency.buffering.toFixed(1)} ms</Text>
+              <Text>Preprocessing: {latency.preprocessing.toFixed(2)} ms</Text>
+              <Text>Inference: {latency.inference.toFixed(2)} ms</Text>
+              <Text>Decision: {latency.decision.toFixed(2)} ms</Text>
+              <Text style={{ fontWeight: 'bold' }}>
+                Total: {latency.total.toFixed(2)} ms
+              </Text>
+            </View>
+          </Card>
+
+          <Card title="Live Sensors">
+            <View style={styles.cardsRow}>
+              <View style={styles.sensorCol}>
+                <Text style={styles.cardKicker}>
+                  Accelerometer · {hz.acc.toFixed(1)} Hz
+                </Text>
+                <Text style={styles.cardVal}>x: {fmt(accDisp.x)}</Text>
+                <Text style={styles.cardVal}>y: {fmt(accDisp.y)}</Text>
+                <Text style={styles.cardVal}>z: {fmt(accDisp.z)}</Text>
               </View>
-            )}
-          </View>
-        </Card>
 
-        <FeedbackSection currentWindowData={currentWindow} />
+              <View style={styles.sensorCol}>
+                <Text style={styles.cardKicker}>
+                  Gyroscope · {hz.gyr.toFixed(1)} Hz
+                </Text>
+                <Text style={styles.cardVal}>x: {fmt(gyrDisp.x)}</Text>
+                <Text style={styles.cardVal}>y: {fmt(gyrDisp.y)}</Text>
+                <Text style={styles.cardVal}>z: {fmt(gyrDisp.z)}</Text>
+              </View>
 
-        <Card title="Model Performance">
-          <View style={{ marginTop: 8 }}>
-            <Text>Model: CNN-LSTM</Text>
-            <Text>Buffering: {latency.buffering.toFixed(1)} ms</Text>
-            <Text>Preprocessing: {latency.preprocessing.toFixed(2)} ms</Text>
-            <Text>Inference: {latency.inference.toFixed(2)} ms</Text>
-            <Text>Decision: {latency.decision.toFixed(2)} ms</Text>
-            <Text style={{ fontWeight: 'bold' }}>
-              Total: {latency.total.toFixed(2)} ms
-            </Text>
-          </View>
-        </Card>
-
-        <Card title="Live Sensors">
-          <View style={styles.cardsRow}>
-            <View style={styles.sensorCol}>
-              <Text style={styles.cardKicker}>
-                Accelerometer · {hz.acc.toFixed(1)} Hz
-              </Text>
-              <Text style={styles.cardVal}>x: {fmt(accDisp.x)}</Text>
-              <Text style={styles.cardVal}>y: {fmt(accDisp.y)}</Text>
-              <Text style={styles.cardVal}>z: {fmt(accDisp.z)}</Text>
+              <View style={styles.sensorCol}>
+                <Text style={styles.cardKicker}>
+                  Magnetometer · {hz.mag.toFixed(1)} Hz
+                </Text>
+                <Text style={styles.cardVal}>x: {fmt(magDisp.x)}</Text>
+                <Text style={styles.cardVal}>y: {fmt(magDisp.y)}</Text>
+                <Text style={styles.cardVal}>z: {fmt(magDisp.z)}</Text>
+              </View>
             </View>
-
-            <View style={styles.sensorCol}>
-              <Text style={styles.cardKicker}>
-                Gyroscope · {hz.gyr.toFixed(1)} Hz
-              </Text>
-              <Text style={styles.cardVal}>x: {fmt(gyrDisp.x)}</Text>
-              <Text style={styles.cardVal}>y: {fmt(gyrDisp.y)}</Text>
-              <Text style={styles.cardVal}>z: {fmt(gyrDisp.z)}</Text>
-            </View>
-
-            <View style={styles.sensorCol}>
-              <Text style={styles.cardKicker}>
-                Magnetometer · {hz.mag.toFixed(1)} Hz
-              </Text>
-              <Text style={styles.cardVal}>x: {fmt(magDisp.x)}</Text>
-              <Text style={styles.cardVal}>y: {fmt(magDisp.y)}</Text>
-              <Text style={styles.cardVal}>z: {fmt(magDisp.z)}</Text>
-            </View>
-          </View>
-        </Card>
-      </View>
-    </ScrollView>
-  </SafeAreaView>
-);
+          </Card>
+        </View>
+      </ScrollView>
+    </SafeAreaView>
+  );
 }
 
 
@@ -638,27 +750,27 @@ function FilesScreen() {
 
   return (
     <SafeAreaView style={styles.safeArea}>
-    <View style={styles.screen}>
-      <Text style={styles.title}>Files</Text>
-      <FlatList
-        data={files}
-        keyExtractor={(it) => it.path}
-        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={async () => { setRefreshing(true); await load(); setRefreshing(false); }} />}
-        ItemSeparatorComponent={() => <View style={{ height: 10 }} />}
-        renderItem={({ item }) => (
-          <View style={styles.fileRow}>
-            <View style={{ flex: 1 }}>
-              <Text style={styles.fileName}>{item.name}</Text>
-              <Text style={styles.fileMeta}>{(item.size / 1024).toFixed(1)} KB · {item.mtime ? item.mtime.toLocaleString() : '-'}</Text>
+      <View style={styles.screen}>
+        <Text style={styles.title}>Files</Text>
+        <FlatList
+          data={files}
+          keyExtractor={(it) => it.path}
+          refreshControl={<RefreshControl refreshing={refreshing} onRefresh={async () => { setRefreshing(true); await load(); setRefreshing(false); }} />}
+          ItemSeparatorComponent={() => <View style={{ height: 10 }} />}
+          renderItem={({ item }) => (
+            <View style={styles.fileRow}>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.fileName}>{item.name}</Text>
+                <Text style={styles.fileMeta}>{(item.size / 1024).toFixed(1)} KB · {item.mtime ? item.mtime.toLocaleString() : '-'}</Text>
+              </View>
+              <GhostButton title="Share" onPress={() => onShare(item)} />
+              <GhostButton title="Delete" onPress={() => onDelete(item)} />
             </View>
-            <GhostButton title="Share" onPress={() => onShare(item)} />
-            <GhostButton title="Delete" onPress={() => onDelete(item)} />
-          </View>
-        )}
-        ListEmptyComponent={<Text style={{ color: '#64748B' }}>Belum ada file rekaman.</Text>}
-        contentContainerStyle={{ paddingVertical: 8, gap: 10 }}
-      />
-    </View>
+          )}
+          ListEmptyComponent={<Text style={{ color: '#64748B' }}>Belum ada file rekaman.</Text>}
+          contentContainerStyle={{ paddingVertical: 8, gap: 10 }}
+        />
+      </View>
     </SafeAreaView>
   );
 }
@@ -680,12 +792,12 @@ export default function App() {
           tabBarIcon: ({ color, size, focused }) => {
             const icon =
               // route.name === 'Dashboard' ? (focused ? 'stats-chart' : 'stats-chart-outline') :
-                route.name === 'Sampling' ? (focused ? 'pulse' : 'pulse-outline') :
-                  // route.name === 'Capture' ? (focused ? 'recording' : 'recording-outline') :
-                    route.name === 'Prediksi' ? (focused ? 'analytics' : 'analytics-outline') :
-                      // route.name === 'Input Rows' ? (focused ? 'clipboard' : 'clipboard-outline') :
-                        // route.name === 'Prediksi CSV' ? (focused ? 'document-text' : 'document-text-outline') :
-                          (focused ? 'folder' : 'folder-outline');
+              route.name === 'Sampling' ? (focused ? 'pulse' : 'pulse-outline') :
+                // route.name === 'Capture' ? (focused ? 'recording' : 'recording-outline') :
+                route.name === 'Prediksi' ? (focused ? 'analytics' : 'analytics-outline') :
+                  // route.name === 'Input Rows' ? (focused ? 'clipboard' : 'clipboard-outline') :
+                  // route.name === 'Prediksi CSV' ? (focused ? 'document-text' : 'document-text-outline') :
+                  (focused ? 'folder' : 'folder-outline');
             return <Ionicons name={icon} size={size} color={color} />;
           },
         })}
@@ -705,7 +817,7 @@ export default function App() {
 
 // ============== Styles ==============
 const styles = StyleSheet.create({
-    safeArea: {
+  safeArea: {
     flex: 1,
     backgroundColor: '#F7F9FB',
   },

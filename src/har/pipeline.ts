@@ -1,86 +1,137 @@
 // src/har/pipeline.ts // deep learning
-
 import { InferenceSession, Tensor } from 'onnxruntime-react-native';
 import RNFS from 'react-native-fs';
 import { Platform } from 'react-native';
-import { type Window } from './features'; // cukup type-nya saja
-import { sendLocalModel } from './flClient'; 
+import { type Window } from './features';
 import performance from 'react-native-performance';
-// lstm_har_model2
-// ----- KONFIG -----
-// const MODEL_FILE = 'cnn_har_model2.onnx';
+
 const MODEL_FILE = 'cnn_lstm_har_model2.onnx';
-// const MODEL_FILE = 'lstm_har_model2.onnx';
 
 let session: InferenceSession | null = null;
 let currentModel: InferenceSession | null = null;
 
 async function ensureSession() {
-  if (session) return session!;
-  if (currentModel) return currentModel!;
+  if (session) return session;
+  if (currentModel) return currentModel;
+
   let uri = MODEL_FILE;
 
   if (Platform.OS === 'android') {
     const dest = `${RNFS.DocumentDirectoryPath}/${MODEL_FILE}`;
+
     try {
-      if (await RNFS.exists(dest)) {
-        await RNFS.unlink(dest); // hapus file lama
+      const exists = await RNFS.exists(dest);
+      if (!exists) {
+        await RNFS.copyFileAssets(MODEL_FILE, dest);
+        console.log('✅ Copied model to:', dest);
+      } else {
+        console.log('✅ ONNX already exists at:', dest);
       }
-      await RNFS.copyFileAssets(MODEL_FILE, dest);
-      console.log('✅ Copied model to:', dest);
+
       uri = 'file://' + dest;
-    } catch {
-      uri = `asset:///${MODEL_FILE}`;
+    } catch (err) {
+      console.error('❌ Failed copying ONNX asset:', err);
+      throw err;
     }
   }
 
   session = await InferenceSession.create(uri);
+  currentModel = session;
+
   console.log('📦 Loaded model from:', uri);
   console.log('🧠 Input names:', session.inputNames);
   console.log('🎯 Output names:', session.outputNames);
-  return session!;
+
+  return session;
 }
 
 export async function loadSession() {
   return ensureSession();
 }
+// Tambahkan di bagian atas file (di bawah let session)
+let cachedScaler: { mean: number[], scale: number[] } | null = null;
 
-// 🔹 CNN: input raw [1, 100, 9]
-export async function predictWindow(win: Window): Promise<{ classId: number; conf: number; probs: number[] }> {
-  const sess = await ensureSession();
+async function getScalerValues() {
+  if (cachedScaler) return cachedScaler; // Ambil dari cache jika sudah ada
 
-  // 1️⃣ gabungkan data sensor
-  const rawData = [
-    ...win.accel_x, ...win.accel_y, ...win.accel_z,
-    ...win.gyro_x,  ...win.gyro_y,  ...win.gyro_z,
-    ...win.mag_x,   ...win.mag_y,   ...win.mag_z,
-  ];
-
-  // 2️⃣ pastikan total data = 100×9 = 900
-  if (rawData.length !== 900) {
-    throw new Error(`Invalid window shape: got ${rawData.length}, expected 900 (100x9)`);
+  const path = `${RNFS.DocumentDirectoryPath}/models/scaler.json`;
+  try {
+    const content = await RNFS.readFile(path, 'utf8');
+    const scaler = JSON.parse(content);
+    cachedScaler = {
+      mean: scaler.mean,
+      scale: scaler.scale
+    };
+    return cachedScaler;
+  } catch (err) {
+    console.error("Gagal membaca scaler:", err);
+    return null;
   }
+}
 
-  // 3️⃣ buat tensor [1, 100, 9]
-  const tensor = new Tensor('float32', Float32Array.from(rawData), [1, 100, 9]);
+export async function predictWindow(
+  win: Window
+): Promise<{ classId: number; conf: number; probs: number[] }> {
+  // const sess = await ensureSession();
 
-  // 4️⃣ jalankan inference
-  const out = await sess.run({ input: tensor });
-  const firstOutputName = sess.outputNames[0];
-  const probT = out[firstOutputName];
-  const probs = Array.from(probT.data as Float32Array);
+  // const rawData = [
+  //   ...win.accel_x, ...win.accel_y, ...win.accel_z,
+  //   ...win.gyro_x,  ...win.gyro_y,  ...win.gyro_z,
+  //   ...win.mag_x,   ...win.mag_y,   ...win.mag_z,
+  // ];
 
-
-  // 🔸 Kirim hasil probabilitas ke server federated (asinkron) 
-  // try {
-  //   await sendLocalModel(probs);
-  //   console.log('📡 Sent probabilities to FL server');
-  // } catch (err) {
-  //   console.warn('⚠️ Failed to send weights to FL server:', err);
+  // if (rawData.length !== 900) {
+  //   throw new Error(`Invalid window shape: got ${rawData.length}, expected 900`);
   // }
 
-  // 5️⃣ ambil prediksi tertinggi
-  let imax = 0, pmax = probs[0];
+  // const tensor = new Tensor("float32", Float32Array.from(rawData), [1, 100, 9]);
+
+  // const inputName = sess.inputNames[0];
+  // const outputName = sess.outputNames[0];
+
+  // const out = await sess.run({ [inputName]: tensor });
+  const sess = await ensureSession();
+  const scaler = await getScalerValues();
+
+  if (!scaler) throw new Error("Scaler data tidak ditemukan!");
+
+  const interleavedData = [];
+  
+  // Looping sebanyak 100 timesteps
+  for (let i = 0; i < 100; i++) {
+    // 1. Ambil baris data mentah (9 fitur)
+    const rawRow = [
+      win.accel_x[i], win.accel_y[i], win.accel_z[i],
+      win.gyro_x[i],  win.gyro_y[i],  win.gyro_z[i],
+      win.mag_x[i],   win.mag_y[i],   win.mag_z[i]
+      
+    ];
+    
+    // 2. Normalisasi setiap fitur menggunakan mean dan scale dari Python
+    const normalizedRow = rawRow.map((val, idx) => {
+      
+      return (val - scaler.mean[idx]) / scaler.scale[idx];
+    });
+    if (i === 0) console.log("Hasil Normalisasi Pertama:", normalizedRow);
+
+    // 3. Masukkan ke array utama
+    interleavedData.push(...normalizedRow);
+    console.log("nialai win.accel_z[0] : " ,win.accel_z[0]);
+  }
+
+  // Sekarang data sudah [1, 100, 9] dengan urutan dan skala yang benar
+  const tensor = new Tensor("float32", Float32Array.from(interleavedData), [1, 100, 9]);
+  
+  const inputName = sess.inputNames[0];
+  const outputName = sess.outputNames[0];
+
+  const out = await sess.run({ [inputName]: tensor });
+
+  const probT = out[outputName];
+  const probs = Array.from(probT.data as Float32Array);
+
+  let imax = 0;
+  let pmax = probs[0];
   for (let i = 1; i < probs.length; i++) {
     if (probs[i] > pmax) {
       pmax = probs[i];
@@ -91,12 +142,49 @@ export async function predictWindow(win: Window): Promise<{ classId: number; con
   return { classId: imax, conf: pmax, probs };
 }
 
-// opsional: benchmark model
+// export async function predictWindow(
+//   win: Window
+// ): Promise<{ classId: number; conf: number; probs: number[] }> {
+//   const sess = await ensureSession();
+
+//   const rawData = [
+//     ...win.accel_x, ...win.accel_y, ...win.accel_z,
+//     ...win.gyro_x,  ...win.gyro_y,  ...win.gyro_z,
+//     ...win.mag_x,   ...win.mag_y,   ...win.mag_z,
+//   ];
+
+//   if (rawData.length !== 900) {
+//     throw new Error(`Invalid window shape: got ${rawData.length}, expected 900`);
+//   }
+
+//   const tensor = new Tensor("float32", Float32Array.from(rawData), [1, 100, 9]);
+
+//   const inputName = sess.inputNames[0];
+//   const outputName = sess.outputNames[0];
+
+//   const out = await sess.run({ [inputName]: tensor });
+  
+
+//   const probT = out[outputName];
+//   const probs = Array.from(probT.data as Float32Array);
+
+//   let imax = 0;
+//   let pmax = probs[0];
+//   for (let i = 1; i < probs.length; i++) {
+//     if (probs[i] > pmax) {
+//       pmax = probs[i];
+//       imax = i;
+//     }
+//   }
+
+//   return { classId: imax, conf: pmax, probs };
+// }
+
 export async function benchmarkModel(iterations = 30) {
   const sess = await ensureSession();
 
   const dummyData = new Float32Array(100 * 9).fill(0);
-  const tensor = new Tensor('float32', dummyData, [1, 100, 9]);
+  const tensor = new Tensor("float32", dummyData, [1, 100, 9]);
 
   const times: number[] = [];
   for (let i = 0; i < iterations; i++) {
@@ -107,34 +195,29 @@ export async function benchmarkModel(iterations = 30) {
   }
 
   const mean = times.reduce((a, b) => a + b, 0) / times.length;
-  const sd = Math.sqrt(times.map(t => (t - mean) ** 2).reduce((a, b) => a + b, 0) / times.length);
+  const sd = Math.sqrt(
+    times.map(t => (t - mean) ** 2).reduce((a, b) => a + b, 0) / times.length
+  );
+
   return { mean, sd, iterations };
-}
-export async function getModelWeights(): Promise<number[]> {
-  await ensureSession();
-  // Sementara: kirim dummy float array untuk uji federated learning
-  const dummyWeights = Array.from({ length: 100 }, () => Math.random());
-  return dummyWeights;
 }
 
 export async function reloadOnnxModel(path?: string) {
   const modelPath = path ?? `${RNFS.DocumentDirectoryPath}/cnn_lstm_har_model2.onnx`;
-  console.log("🧠 Memuat ulang model dari:", modelPath);
+  console.log("🧠 Reloading model from:", modelPath);
 
-  // Buat ulang session ONNX baru
-  const newSession = await InferenceSession.create(modelPath);
-  session = newSession; // 🔥 ganti session aktif yang dipakai untuk prediksi
+  const normalizedPath = modelPath.startsWith("file://") ? modelPath : `file://${modelPath}`;
+  const newSession = await InferenceSession.create(normalizedPath);
+
+  session = newSession;
   currentModel = newSession;
 
-  console.log("✅ Model ONNX berhasil dimuat ulang dan session aktif diperbarui");
-  console.log("🧩 Aktifkan model versi:", modelPath.split("_v").pop()?.split(".")[0]);
-
+  console.log("✅ Model reloaded successfully");
 }
 
 export function getCurrentModel() {
   return currentModel;
 }
-  
 
 
 //src//har//pipeline.ts

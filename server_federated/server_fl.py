@@ -1,50 +1,192 @@
-# server_fl.py
 import socketio
 import numpy as np
 import uvicorn
 import json
 import os
 import asyncio
-import torch
 from datetime import datetime
-from ModelHAR import ModelHAR
-import threading
+
+import tensorflow as tf
 from fastapi import FastAPI
 from fastapi.responses import FileResponse
 
-# ====== KONFIGURASI DASAR ======
-sio = socketio.AsyncServer(async_mode='asgi', cors_allowed_origins='*')
-app = socketio.ASGIApp(sio)
+@tf.keras.utils.register_keras_serializable()
+class CompatibleLSTM(tf.keras.layers.LSTM):
+    @classmethod
+    def from_config(cls, config):
+        config.pop("time_major", None)
+        return cls(**config)
 
-WEIGHTS_FILE = "weights.json"
-FEEDBACK_FILE = "feedback_buffer.json"
-MODEL_DIR = "models"
-MODEL_VERSION_FILE = "model_version.txt"
-LOG_FILE = "retrain_log.json"
-
-RETRAIN_INTERVAL = 30        # retrain tiap 1 menit
-MAX_BUFFER_SIZE = 300         # simpan max 300 feedback terakhir
-MIN_FEEDBACK_TO_TRAIN = 10    # mulai retrain kalau ada >=20 data
-feedback_lock = threading.Lock()
-os.makedirs(MODEL_DIR, exist_ok=True)
-
-# ====== MUAT MODEL GLOBAL AWAL ======
-if os.path.exists(WEIGHTS_FILE):
-    with open(WEIGHTS_FILE, "r") as f:
-        data = json.load(f)
-        if isinstance(data, list) and len(data) > 0:
-            global_model = np.array(data[0], dtype=np.float32)
-        else:
-            global_model = np.zeros(100, dtype=np.float32)
-    print(f"📦 Loaded global model from {WEIGHTS_FILE} (len={len(global_model)})")
-else:
-    global_model = np.zeros(100, dtype=np.float32)
-    print("⚠️ No weights.json found — using zeros")
-
-client_updates = []
+def load_keras_model_compat(path: str):
+    return tf.keras.models.load_model(
+        path,
+        custom_objects={
+            "CompatibleLSTM": CompatibleLSTM,
+            "LSTM": CompatibleLSTM,
+        },
+        compile=False
+    )
 
 # ====================================================
-# EVENT HANDLERS SOCKET.IO
+# KONFIGURASI
+# ====================================================
+HOST = "0.0.0.0"
+PORT = 5000
+
+MODEL_DIR = "models"
+MODEL_VERSION_FILE = "model_version.txt"
+WEIGHTS_VECTOR_FILE = "weights.json"
+FL_LOG_FILE = "fl_round_log.json"
+
+# model dasar dari training Python
+BASE_KERAS_MODEL_PATH = "model_cnn_lstm_trained.h5"
+
+# model global yang akan terus diperbarui server
+GLOBAL_KERAS_MODEL_PATH = "global_model.keras"
+
+MIN_CLIENT_UPDATES = 2
+ONNX_OPSET = 13
+
+os.makedirs(MODEL_DIR, exist_ok=True)
+
+sio = socketio.AsyncServer(async_mode="asgi", cors_allowed_origins="*")
+fastapi_app = FastAPI()
+app = socketio.ASGIApp(sio, other_asgi_app=fastapi_app)
+
+client_updates = []
+updates_lock = asyncio.Lock()
+
+# ====================================================
+# HELPER: VERSION
+# ====================================================
+def load_version() -> int:
+    if os.path.exists(MODEL_VERSION_FILE):
+        with open(MODEL_VERSION_FILE, "r") as f:
+            try:
+                return int(f.read().strip())
+            except Exception:
+                return 0
+    return 0
+
+def save_version(version: int):
+    with open(MODEL_VERSION_FILE, "w") as f:
+        f.write(str(version))
+
+current_version = load_version()
+
+# ====================================================
+# HELPER: KERAS MODEL <-> VECTOR
+# ====================================================
+def flatten_trainable_variables(model: tf.keras.Model) -> np.ndarray:
+    parts = []
+    for var in model.trainable_variables:
+        arr = var.numpy().astype(np.float32).ravel()
+        parts.append(arr)
+    if not parts:
+        return np.array([], dtype=np.float32)
+    return np.concatenate(parts).astype(np.float32)
+
+def assign_flat_vector_to_model(model: tf.keras.Model, flat_vector: np.ndarray):
+    offset = 0
+    for var in model.trainable_variables:
+        shape = var.shape
+        numel = int(np.prod(shape))
+        chunk = flat_vector[offset:offset + numel]
+        if chunk.size != numel:
+            raise ValueError(
+                f"Vector size mismatch when rebuilding Keras weights for '{var.name}': "
+                f"need {numel}, got {chunk.size}"
+            )
+        reshaped = chunk.reshape(shape)
+        var.assign(reshaped)
+        offset += numel
+
+    if offset != len(flat_vector):
+        raise ValueError(
+            f"Unused values in flat_vector: used {offset}, total {len(flat_vector)}"
+        )
+
+def save_weights_vector(flat_vector: np.ndarray):
+    with open(WEIGHTS_VECTOR_FILE, "w") as f:
+        json.dump([flat_vector.tolist()], f)
+
+def append_round_log(log_entry: dict):
+    logs = []
+    if os.path.exists(FL_LOG_FILE):
+        with open(FL_LOG_FILE, "r") as f:
+            try:
+                logs = json.load(f)
+            except Exception:
+                logs = []
+    logs.append(log_entry)
+    with open(FL_LOG_FILE, "w") as f:
+        json.dump(logs, f, indent=2)
+
+def export_onnx_from_keras(model: tf.keras.Model, version: int) -> str:
+    try:
+        import tf2onnx
+    except ImportError as e:
+        raise RuntimeError(
+            "tf2onnx belum terinstall. Install dulu: pip install tf2onnx"
+        ) from e
+
+    onnx_name = f"cnn_lstm_har_model_v{version}.onnx"
+    onnx_path = os.path.join(MODEL_DIR, onnx_name)
+
+    # patch kompatibilitas untuk Keras 3 + tf2onnx
+    if not hasattr(model, "output_names") or model.output_names is None:
+        try:
+            model.output_names = [out.name.split(":")[0] for out in model.outputs]
+        except Exception:
+            model.output_names = ["output"]
+
+    input_shape = model.input_shape
+    if isinstance(input_shape, list):
+        input_shape = input_shape[0]
+
+    concrete_shape = [None if i == 0 else d for i, d in enumerate(input_shape)]
+    spec = (tf.TensorSpec(concrete_shape, tf.float32, name="input"),)
+
+    tf2onnx.convert.from_keras(
+        model,
+        input_signature=spec,
+        opset=ONNX_OPSET,
+        output_path=onnx_path
+    )
+    return onnx_path
+
+# ====================================================
+# INIT GLOBAL MODEL
+# ====================================================
+if os.path.exists(GLOBAL_KERAS_MODEL_PATH):
+    print(f"📦 Loading global Keras model from {GLOBAL_KERAS_MODEL_PATH}")
+    global_model = load_keras_model_compat(GLOBAL_KERAS_MODEL_PATH)
+elif os.path.exists(BASE_KERAS_MODEL_PATH):
+    print(f"📦 Loading base Keras model from {BASE_KERAS_MODEL_PATH}")
+    global_model = load_keras_model_compat(BASE_KERAS_MODEL_PATH)
+    global_model.save(GLOBAL_KERAS_MODEL_PATH)
+else:
+    raise FileNotFoundError(
+        f"Tidak ditemukan model dasar Keras. "
+        f"Cek {GLOBAL_KERAS_MODEL_PATH} atau {BASE_KERAS_MODEL_PATH}"
+    )
+
+global_model_vector = flatten_trainable_variables(global_model)
+expected_vector_len = len(global_model_vector)
+save_weights_vector(global_model_vector)
+
+existing_onnx = [f for f in os.listdir(MODEL_DIR) if f.endswith(".onnx")]
+if not existing_onnx:
+    export_path = export_onnx_from_keras(global_model, current_version)
+    print(f"✅ Initial ONNX exported: {export_path}")
+
+print(
+    f"✅ Global Keras model ready | version={current_version} | "
+    f"vector_len={expected_vector_len}"
+)
+
+# ====================================================
+# SOCKET EVENTS
 # ====================================================
 @sio.event
 async def connect(sid, environ):
@@ -55,225 +197,161 @@ async def disconnect(sid):
     print(f"🔴 Client disconnected: {sid}")
 
 @sio.event
-async def send_weights(sid, data):
-    """Terima bobot model dari client"""
-    global global_model
-    weights = np.array(data["weights"], dtype=np.float32)
-    client_updates.append(weights)
-    print(f"📦 Received weights from {sid} (len={len(weights)})")
-
-    # agregasi sederhana
-    if len(client_updates) >= 2:
-        global_model = np.mean(client_updates, axis=0)
-        client_updates.clear()
-        with open(WEIGHTS_FILE, "w") as f:
-            json.dump([global_model.tolist()], f)
-        print(f"🧮 Updated global model → saved to {WEIGHTS_FILE}")
-        await sio.emit("global_model", {"weights": global_model.tolist()})
-
-@sio.event
 async def request_model(sid):
-    """Client minta model global"""
-    await sio.emit("global_model", {"weights": global_model.tolist()}, to=sid)
-    print(f"📤 Sent global model to {sid}")
+    await sio.emit(
+        "global_model",
+        {
+            "updated": True,
+            "version": current_version,
+            "vector_len": expected_vector_len,
+        },
+        to=sid
+    )
+    print(f"📤 Sent model metadata to {sid} | version={current_version}")
 
 @sio.event
-async def send_feedback(sid, data):
-    """Terima feedback window sensor dari klien"""
-    window = data.get("window")
-    label = data.get("label")
-    if not window or not label:
-        print(f"⚠️ Invalid feedback from {sid}")
+async def send_weights(sid, data):
+    global global_model, global_model_vector, current_version, expected_vector_len
+
+    if "weights" not in data:
+        print(f"⚠️ No 'weights' field from {sid}")
         return
 
-    buf = []
-    if os.path.exists(FEEDBACK_FILE):
-        with open(FEEDBACK_FILE) as f:
-            try:
-                buf = json.load(f)
-            except:
-                buf = []
+    try:
+        weights = np.array(data["weights"], dtype=np.float32)
+    except Exception as e:
+        print(f"⚠️ Invalid weights payload from {sid}: {e}")
+        return
 
-    # simpan data baru
-    buf.append({"window": window, "label": label})
-    if len(buf) > MAX_BUFFER_SIZE:
-        buf = buf[-MAX_BUFFER_SIZE:]  # buang data lama
+    if weights.ndim != 1:
+        print(f"⚠️ Invalid weights ndim from {sid}: {weights.ndim}")
+        return
 
-    with open(FEEDBACK_FILE, "w") as f:
-        json.dump(buf, f)
-
-    print(f"💾 Feedback received from {sid}: {label} (buffer={len(buf)})")
-
-# ====================================================
-# LOOP RETRAIN OTOMATIS
-# ====================================================
-async def retrain_loop():
-    await asyncio.sleep(10)
-    while True:
-        try:
-            if not os.path.exists(FEEDBACK_FILE):
-                await asyncio.sleep(RETRAIN_INTERVAL)
-                continue
-
-            with open(FEEDBACK_FILE) as f:
-                buf = json.load(f)
-
-            if len(buf) >= MIN_FEEDBACK_TO_TRAIN:
-                print(f"🔁 Starting retrain ({len(buf)} feedback samples)...")
-
-                # ----- Persiapkan data -----
-                X, y_labels = [], []
-                for b in buf:
-                    w = b["window"]
-                    sample = np.column_stack([
-                        w["accel_x"], w["accel_y"], w["accel_z"],
-                        w["gyro_x"],  w["gyro_y"],  w["gyro_z"],
-                        w["mag_x"],   w["mag_y"],   w["mag_z"]
-                    ])
-                    X.append(sample)
-                    y_labels.append(b["label"])
-
-                X = np.array(X, dtype=np.float32)
-                X = (X - X.mean(axis=(0, 1), keepdims=True)) / (X.std(axis=(0, 1), keepdims=True) + 1e-8)
-
-                label_map = {
-                    "Duduk Aktif": 0,
-                    "Berbaring Aktif": 1,
-                    "Berdiri Aktif": 2,
-                    "Berdiri Tidak Aktif": 3,
-                    "Duduk Tidak Aktif": 4,
-                    "Berbaring Tidak Aktif": 5,
-                }
-                y = np.array([label_map.get(l, 0) for l in y_labels], dtype=np.int64)
-
-                # ----- Load dan latih model -----
-                model = ModelHAR()
-                if os.path.exists("global_model.pt"):
-                    model.load_state_dict(torch.load("global_model.pt", weights_only=True))
-
-                model.train()
-                optimizer = torch.optim.Adam(model.parameters(), lr=5e-4)
-                criterion = torch.nn.CrossEntropyLoss()
-
-                X_tensor = torch.tensor(X)
-                y_tensor = torch.tensor(y)
-                batch_size = 4
-
-                for epoch in range(10):
-                    perm = torch.randperm(len(X_tensor))
-                    total_loss = 0
-                    for i in range(0, len(X_tensor), batch_size):
-                        idx = perm[i:i + batch_size]
-                        batch_x, batch_y = X_tensor[idx], y_tensor[idx]
-                        optimizer.zero_grad()
-                        out = model(batch_x)
-                        loss = criterion(out, batch_y)
-                        loss.backward()
-                        optimizer.step()
-                        total_loss += loss.item()
-                    print(f"🧠 Retrain Epoch {epoch + 1}, Avg Loss={total_loss / len(X_tensor):.4f}")
-
-                # ----- Simpan model baru -----
-                version = 1
-                if os.path.exists(MODEL_VERSION_FILE):
-                    with open(MODEL_VERSION_FILE) as f:
-                        version = int(f.read().strip()) + 1
-
-                versioned_name = f"cnn_lstm_har_model_v{version}.onnx"
-                model_path = os.path.join(MODEL_DIR, versioned_name)
-
-                torch.save(model.state_dict(), "global_model.pt")
-
-                dummy_input = torch.randn(1, 100, 9)
-                torch.onnx.export(
-                    model,
-                    dummy_input,
-                    model_path,
-                    export_params=True,
-                    opset_version=13,
-                    do_constant_folding=True,
-                    input_names=['input'],
-                    output_names=['output'],
-                    dynamic_axes={'input': {0: 'batch_size'}, 'output': {0: 'batch_size'}}
+    if len(weights) != expected_vector_len:
+        print(
+            f"⚠️ Shape mismatch from {sid}: got {len(weights)}, "
+            f"expected {expected_vector_len}"
+        )
+        await sio.emit(
+            "fl_error",
+            {
+                "message": (
+                    f"weights length mismatch: got {len(weights)}, "
+                    f"expected {expected_vector_len}"
                 )
-                print(f"✅ Model updated → {versioned_name}")
+            },
+            to=sid
+        )
+        return
 
-                with open(MODEL_VERSION_FILE, "w") as f:
-                    f.write(str(version))
+    async with updates_lock:
+        client_updates.append(weights)
+        print(
+            f"📦 Received weights from {sid} (len={len(weights)}) | "
+            f"buffered={len(client_updates)}"
+        )
 
-                # ----- Simpan log retrain -----
-                log_entry = {
-                    "version": version,
-                    "timestamp": datetime.now().isoformat(),
-                    "feedback_used": len(y),
-                    "final_loss": float(total_loss / len(X_tensor))
-                }
-                logs = []
-                if os.path.exists(LOG_FILE):
-                    with open(LOG_FILE) as f:
-                        try:
-                            logs = json.load(f)
-                        except:
-                            logs = []
-                logs.append(log_entry)
-                with open(LOG_FILE, "w") as f:
-                    json.dump(logs, f, indent=2)
+        if len(client_updates) < MIN_CLIENT_UPDATES:
+            await sio.emit(
+                "fl_status",
+                {
+                    "message": (
+                        f"Update buffered ({len(client_updates)}/{MIN_CLIENT_UPDATES})"
+                    )
+                },
+                to=sid
+            )
+            return
 
-                # kosongkan buffer setelah retrain
-                buf.clear()
-                with open(FEEDBACK_FILE, "w") as f:
-                    json.dump(buf, f)
+        # ====================================================
+        # FEDERATED AVERAGING
+        # ====================================================
+        stacked = np.stack(client_updates, axis=0)
+        aggregated = np.mean(stacked, axis=0).astype(np.float32)
+        client_updates.clear()
 
-                await sio.emit("global_model", {"updated": True, "version": version})
-                print(f"📢 Model v{version} broadcasted to all clients")
+        # pasang vector hasil agregasi ke model Keras
+        assign_flat_vector_to_model(global_model, aggregated)
 
-        except Exception as e:
-            print(f"⚠️ Retrain loop error: {e}")
+        # simpan model global baru
+        global_model.save(GLOBAL_KERAS_MODEL_PATH)
 
-        await asyncio.sleep(RETRAIN_INTERVAL)
+        # simpan vector juga
+        save_weights_vector(aggregated)
+
+        # bump version
+        current_version += 1
+        save_version(current_version)
+
+        # export ONNX baru untuk mobile inference
+        onnx_path = export_onnx_from_keras(global_model, current_version)
+
+        # update in-memory
+        global_model_vector = aggregated
+        expected_vector_len = len(global_model_vector)
+
+        log_entry = {
+            "version": current_version,
+            "timestamp": datetime.now().isoformat(),
+            "num_client_updates": int(stacked.shape[0]),
+            "vector_len": int(expected_vector_len),
+            "onnx_path": onnx_path,
+        }
+        append_round_log(log_entry)
+
+        print(f"🧮 Aggregation complete | version={current_version}")
+        print(f"✅ New Keras global model saved: {GLOBAL_KERAS_MODEL_PATH}")
+        print(f"✅ New ONNX exported: {onnx_path}")
+
+        await sio.emit(
+            "global_model",
+            {
+                "updated": True,
+                "version": current_version,
+                "vector_len": expected_vector_len,
+            }
+        )
+        print(f"📢 Broadcasted global model v{current_version} to all clients")
 
 # ====================================================
-# FASTAPI UNTUK DOWNLOAD MODEL
+# FASTAPI ROUTES
 # ====================================================
-fastapi_app = FastAPI()
-app = socketio.ASGIApp(sio, other_asgi_app=fastapi_app)
+@fastapi_app.get("/health")
+async def health():
+    return {
+        "status": "ok",
+        "version": current_version,
+        "vector_len": expected_vector_len,
+        "buffered_updates": len(client_updates),
+    }
 
 @fastapi_app.get("/model/latest")
 async def get_latest_model():
-    """Kirim model ONNX terbaru berdasarkan versi tertinggi"""
-    if not os.path.exists(MODEL_DIR):
-        os.makedirs(MODEL_DIR, exist_ok=True)
-
     files = [f for f in os.listdir(MODEL_DIR) if f.endswith(".onnx")]
     if not files:
-        fallback_path = "cnn_lstm_har_model2.onnx"
-        if os.path.exists(fallback_path):
-            print(f"📤 Serving fallback model: {fallback_path}")
-            return FileResponse(fallback_path, filename=os.path.basename(fallback_path),
-                                media_type="application/octet-stream")
-        return {"error": "No model available"}
+        return {"error": "No ONNX model available"}
 
     def extract_version(name: str) -> int:
         parts = name.split("_v")
-        if len(parts) > 1 and parts[-1].split(".")[0].isdigit():
-            return int(parts[-1].split(".")[0])
-        return 0
+        if len(parts) > 1:
+            tail = parts[-1].split(".")[0]
+            if tail.isdigit():
+                return int(tail)
+        return -1
 
     files.sort(key=extract_version)
     latest_file = files[-1]
     latest_path = os.path.join(MODEL_DIR, latest_file)
+
     print(f"📤 Serving latest model: {latest_file}")
-    return FileResponse(latest_path, filename=latest_file, media_type="application/octet-stream")
+    return FileResponse(
+        latest_path,
+        filename=latest_file,
+        media_type="application/octet-stream"
+    )
 
 # ====================================================
-# JALANKAN SERVER
+# START SERVER
 # ====================================================
-def start_server():
-    uvicorn.run(app, host="0.0.0.0", port=5000)
-
-def start_retrain():
-    asyncio.run(retrain_loop())
-
 if __name__ == "__main__":
-    threading.Thread(target=start_retrain, daemon=True).start()
-    start_server()
+    uvicorn.run(app, host=HOST, port=PORT)

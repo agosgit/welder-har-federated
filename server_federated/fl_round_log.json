@@ -1,0 +1,44 @@
+[
+  {
+    "version": 23,
+    "timestamp": "2026-04-05T18:49:30.216699",
+    "num_client_updates": 2,
+    "vector_len": 41922,
+    "onnx_path": "models\\cnn_lstm_har_model_v23.onnx"
+  },
+  {
+    "version": 24,
+    "timestamp": "2026-04-05T18:54:54.086531",
+    "num_client_updates": 2,
+    "vector_len": 41922,
+    "onnx_path": "models\\cnn_lstm_har_model_v24.onnx"
+  },
+  {
+    "version": 25,
+    "timestamp": "2026-04-24T23:33:31.675637",
+    "num_client_updates": 2,
+    "vector_len": 41922,
+    "onnx_path": "models\\cnn_lstm_har_model_v25.onnx"
+  },
+  {
+    "version": 26,
+    "timestamp": "2026-04-24T23:35:04.657620",
+    "num_client_updates": 2,
+    "vector_len": 41922,
+    "onnx_path": "models\\cnn_lstm_har_model_v26.onnx"
+  },
+  {
+    "version": 27,
+    "timestamp": "2026-04-25T09:55:01.669611",
+    "num_client_updates": 2,
+    "vector_len": 41922,
+    "onnx_path": "models\\cnn_lstm_har_model_v27.onnx"
+  },
+  {
+    "version": 2,
+    "timestamp": "2026-04-25T10:05:53.894809",
+    "num_client_updates": 2,
+    "vector_len": 41922,
+    "onnx_path": "models\\cnn_lstm_har_model_v2.onnx"
+  }
+]
