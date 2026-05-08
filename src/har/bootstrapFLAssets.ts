@@ -2,8 +2,7 @@ import RNFS from "react-native-fs";
 import { Platform } from "react-native";
 
 const MODELS_DIR = `${RNFS.DocumentDirectoryPath}/models`;
-const ONNX_DEST = `${RNFS.DocumentDirectoryPath}/cnn_lstm_har_model2.onnx`;
-const SCALER_DEST = `${RNFS.DocumentDirectoryPath}/models/scaler.json`;
+const ONNX_DEST = `${RNFS.DocumentDirectoryPath}/cnn_lstm_har_model_mobile.onnx`;
 
 export async function ensureFLAssets() {
   if (Platform.OS !== "android") return;
@@ -28,8 +27,8 @@ export async function ensureFLAssets() {
   }
 
   if (!(await RNFS.exists(ONNX_DEST))) {
-    await RNFS.copyFileAssets("cnn_lstm_har_model2.onnx", ONNX_DEST);
-    console.log("✅ Copied cnn_lstm_har_model2.onnx");
+    await RNFS.copyFileAssets("cnn_lstm_har_model_mobile.onnx", ONNX_DEST);
+    console.log("✅ Copied cnn_lstm_har_model_mobile.onnx");
   }
 
   if (!(await RNFS.exists(SCALER_DEST))) {

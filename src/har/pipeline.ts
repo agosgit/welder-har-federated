@@ -5,10 +5,11 @@ import { Platform } from 'react-native';
 import { type Window } from './features';
 import performance from 'react-native-performance';
 
-const MODEL_FILE = 'cnn_lstm_har_model2.onnx';
+const MODEL_FILE = 'cnn_lstm_har_model_mobile.onnx';
 
 let session: InferenceSession | null = null;
 let currentModel: InferenceSession | null = null;
+const CLIPPING_THRESHOLD = 3.0;
 
 async function ensureSession() {
   if (session) return session;
@@ -72,24 +73,6 @@ async function getScalerValues() {
 export async function predictWindow(
   win: Window
 ): Promise<{ classId: number; conf: number; probs: number[] }> {
-  // const sess = await ensureSession();
-
-  // const rawData = [
-  //   ...win.accel_x, ...win.accel_y, ...win.accel_z,
-  //   ...win.gyro_x,  ...win.gyro_y,  ...win.gyro_z,
-  //   ...win.mag_x,   ...win.mag_y,   ...win.mag_z,
-  // ];
-
-  // if (rawData.length !== 900) {
-  //   throw new Error(`Invalid window shape: got ${rawData.length}, expected 900`);
-  // }
-
-  // const tensor = new Tensor("float32", Float32Array.from(rawData), [1, 100, 9]);
-
-  // const inputName = sess.inputNames[0];
-  // const outputName = sess.outputNames[0];
-
-  // const out = await sess.run({ [inputName]: tensor });
   const sess = await ensureSession();
   const scaler = await getScalerValues();
 
@@ -99,28 +82,28 @@ export async function predictWindow(
   
   // Looping sebanyak 100 timesteps
   for (let i = 0; i < 100; i++) {
-    // 1. Ambil baris data mentah (9 fitur)
+    // 1. Ambil baris data mentah (HANYA 6 FITUR, Magnetometer dihapus)
     const rawRow = [
       win.accel_x[i], win.accel_y[i], win.accel_z[i],
-      win.gyro_x[i],  win.gyro_y[i],  win.gyro_z[i],
-      win.mag_x[i],   win.mag_y[i],   win.mag_z[i]
-      
+      win.gyro_x[i],  win.gyro_y[i],  win.gyro_z[i]
     ];
     
-    // 2. Normalisasi setiap fitur menggunakan mean dan scale dari Python
+    // 2. Clipping & Normalisasi
     const normalizedRow = rawRow.map((val, idx) => {
-      
-      return (val - scaler.mean[idx]) / scaler.scale[idx];
+      // Pangkas nilai ekstrem (Safety Net)
+      const clippedVal = Math.max(-CLIPPING_THRESHOLD, Math.min(CLIPPING_THRESHOLD, val));
+      // Z-Score Normalization
+      return (clippedVal - scaler.mean[idx]) / scaler.scale[idx];
     });
-    if (i === 0) console.log("Hasil Normalisasi Pertama:", normalizedRow);
+
+    if (i === 0) console.log("Hasil Normalisasi Pertama (6 Fitur):", normalizedRow);
 
     // 3. Masukkan ke array utama
     interleavedData.push(...normalizedRow);
-    console.log("nialai win.accel_z[0] : " ,win.accel_z[0]);
   }
 
-  // Sekarang data sudah [1, 100, 9] dengan urutan dan skala yang benar
-  const tensor = new Tensor("float32", Float32Array.from(interleavedData), [1, 100, 9]);
+  // Sekarang data sudah [1, 100, 6] 
+  const tensor = new Tensor("float32", Float32Array.from(interleavedData), [1, 100, 6]);
   
   const inputName = sess.inputNames[0];
   const outputName = sess.outputNames[0];
@@ -141,6 +124,100 @@ export async function predictWindow(
 
   return { classId: imax, conf: pmax, probs };
 }
+export async function benchmarkModel(iterations = 30) {
+  const sess = await ensureSession();
+
+  // Update dummy data menjadi 6 fitur
+  const dummyData = new Float32Array(100 * 6).fill(0);
+  const tensor = new Tensor("float32", dummyData, [1, 100, 6]);
+
+  const times: number[] = [];
+  for (let i = 0; i < iterations; i++) {
+    const t0 = performance.now();
+    await sess.run({ input: tensor }); // Pastikan nama input sesuai (default biasanya 'input' atau 'x')
+    const t1 = performance.now();
+    times.push(t1 - t0);
+  }
+
+  const mean = times.reduce((a, b) => a + b, 0) / times.length;
+  const sd = Math.sqrt(
+    times.map(t => (t - mean) ** 2).reduce((a, b) => a + b, 0) / times.length
+  );
+
+  return { mean, sd, iterations };
+}
+// export async function predictWindow(
+//   win: Window
+// ): Promise<{ classId: number; conf: number; probs: number[] }> {
+//   // const sess = await ensureSession();
+
+//   // const rawData = [
+//   //   ...win.accel_x, ...win.accel_y, ...win.accel_z,
+//   //   ...win.gyro_x,  ...win.gyro_y,  ...win.gyro_z,
+//   //   ...win.mag_x,   ...win.mag_y,   ...win.mag_z,
+//   // ];
+
+//   // if (rawData.length !== 900) {
+//   //   throw new Error(`Invalid window shape: got ${rawData.length}, expected 900`);
+//   // }
+
+//   // const tensor = new Tensor("float32", Float32Array.from(rawData), [1, 100, 9]);
+
+//   // const inputName = sess.inputNames[0];
+//   // const outputName = sess.outputNames[0];
+
+//   // const out = await sess.run({ [inputName]: tensor });
+//   const sess = await ensureSession();
+//   const scaler = await getScalerValues();
+
+//   if (!scaler) throw new Error("Scaler data tidak ditemukan!");
+
+//   const interleavedData = [];
+  
+//   // Looping sebanyak 100 timesteps
+//   for (let i = 0; i < 100; i++) {
+//     // 1. Ambil baris data mentah (9 fitur)
+//     const rawRow = [
+//       win.accel_x[i], win.accel_y[i], win.accel_z[i],
+//       win.gyro_x[i],  win.gyro_y[i],  win.gyro_z[i],
+//       win.mag_x[i],   win.mag_y[i],   win.mag_z[i]
+      
+//     ];
+    
+//     // 2. Normalisasi setiap fitur menggunakan mean dan scale dari Python
+//     const normalizedRow = rawRow.map((val, idx) => {
+      
+//       return (val - scaler.mean[idx]) / scaler.scale[idx];
+//     });
+//     if (i === 0) console.log("Hasil Normalisasi Pertama:", normalizedRow);
+
+//     // 3. Masukkan ke array utama
+//     interleavedData.push(...normalizedRow);
+//     console.log("nialai win.accel_z[0] : " ,win.accel_z[0]);
+//   }
+
+//   // Sekarang data sudah [1, 100, 9] dengan urutan dan skala yang benar
+//   const tensor = new Tensor("float32", Float32Array.from(interleavedData), [1, 100, 9]);
+  
+//   const inputName = sess.inputNames[0];
+//   const outputName = sess.outputNames[0];
+
+//   const out = await sess.run({ [inputName]: tensor });
+
+//   const probT = out[outputName];
+//   const probs = Array.from(probT.data as Float32Array);
+
+//   let imax = 0;
+//   let pmax = probs[0];
+//   for (let i = 1; i < probs.length; i++) {
+//     if (probs[i] > pmax) {
+//       pmax = probs[i];
+//       imax = i;
+//     }
+//   }
+
+//   return { classId: imax, conf: pmax, probs };
+// }
 
 // export async function predictWindow(
 //   win: Window
@@ -180,30 +257,31 @@ export async function predictWindow(
 //   return { classId: imax, conf: pmax, probs };
 // }
 
-export async function benchmarkModel(iterations = 30) {
-  const sess = await ensureSession();
+// export async function benchmarkModel(iterations = 30) {
+//   const sess = await ensureSession();
 
-  const dummyData = new Float32Array(100 * 9).fill(0);
-  const tensor = new Tensor("float32", dummyData, [1, 100, 9]);
+//   const dummyData = new Float32Array(100 * 9).fill(0);
+//   const tensor = new Tensor("float32", dummyData, [1, 100, 9]);
 
-  const times: number[] = [];
-  for (let i = 0; i < iterations; i++) {
-    const t0 = performance.now();
-    await sess.run({ input: tensor });
-    const t1 = performance.now();
-    times.push(t1 - t0);
-  }
+//   const times: number[] = [];
+//   for (let i = 0; i < iterations; i++) {
+//     const t0 = performance.now();
+//     await sess.run({ input: tensor });
+//     const t1 = performance.now();
+//     times.push(t1 - t0);
+//   }
 
-  const mean = times.reduce((a, b) => a + b, 0) / times.length;
-  const sd = Math.sqrt(
-    times.map(t => (t - mean) ** 2).reduce((a, b) => a + b, 0) / times.length
-  );
+//   const mean = times.reduce((a, b) => a + b, 0) / times.length;
+//   const sd = Math.sqrt(
+//     times.map(t => (t - mean) ** 2).reduce((a, b) => a + b, 0) / times.length
+//   );
 
-  return { mean, sd, iterations };
-}
+//   return { mean, sd, iterations };
+// }
+
 
 export async function reloadOnnxModel(path?: string) {
-  const modelPath = path ?? `${RNFS.DocumentDirectoryPath}/cnn_lstm_har_model2.onnx`;
+  const modelPath = path ?? `${RNFS.DocumentDirectoryPath}/cnn_lstm_har_model_mobile.onnx`;
   console.log("🧠 Reloading model from:", modelPath);
 
   const normalizedPath = modelPath.startsWith("file://") ? modelPath : `file://${modelPath}`;

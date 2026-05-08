@@ -31,7 +31,6 @@ import FeedbackSection from './src/components/FeedbackSection';
 
 import DashboardScreen from "./src/screens/DashboardScreen";
 
-
 import LiveSensorCharts from './src/components/LiveSensorCharts';
 
 // import { performance } from 'react-native-performance';
@@ -392,7 +391,7 @@ function PredictScreen() {
     }
     samplerRef.current?.stop();
     samplerRef.current = new RealtimeSampler({
-      fs: 50, windowSec: 2, overlap: 0.5,
+      fs: 50, windowSec: 2, overlap: 0.75,
       onWindow: async (win: MLWindow) => {
         try {
           setCurrentWindow(win);
