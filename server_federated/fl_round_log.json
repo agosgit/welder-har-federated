@@ -61,5 +61,19 @@
     "num_client_updates": 2,
     "vector_len": 41346,
     "onnx_path": "models\\cnn_lstm_har_model_mobile_v2.onnx"
+  },
+  {
+    "version": 3,
+    "timestamp": "2026-05-09T10:47:49.030313",
+    "num_client_updates": 2,
+    "vector_len": 41346,
+    "onnx_path": "models\\cnn_lstm_har_model_mobile_v3.onnx"
+  },
+  {
+    "version": 4,
+    "timestamp": "2026-05-09T10:57:16.067058",
+    "num_client_updates": 2,
+    "vector_len": 41346,
+    "onnx_path": "models\\cnn_lstm_har_model_mobile_v4.onnx"
   }
 ]

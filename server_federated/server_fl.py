@@ -9,6 +9,8 @@ from datetime import datetime
 import tensorflow as tf
 from fastapi import FastAPI
 from fastapi.responses import FileResponse
+import time
+from fastapi import Request
 
 @tf.keras.utils.register_keras_serializable()
 class CompatibleLSTM(tf.keras.layers.LSTM):
@@ -46,6 +48,20 @@ GLOBAL_KERAS_MODEL_PATH = "global_model.keras"
 
 MIN_CLIENT_UPDATES = 2
 ONNX_OPSET = 13
+
+SCALER_PATH = "models/scaler_nomag.json" 
+
+if os.path.exists(SCALER_PATH):
+    with open(SCALER_PATH, "r") as f:
+        scaler_dict = json.load(f)
+        scaler_mean = np.array(scaler_dict["mean"], dtype=np.float32)
+        scaler_scale = np.array(scaler_dict["scale"], dtype=np.float32)
+    print("✅ Scaler loaded for Cloud Inference")
+else:
+    print("⚠️ Scaler JSON tidak ditemukan!")
+    # Nilai default (fallback) agar tidak crash
+    scaler_mean = np.zeros(6, dtype=np.float32) 
+    scaler_scale = np.ones(6, dtype=np.float32)
 
 os.makedirs(MODEL_DIR, exist_ok=True)
 
@@ -352,6 +368,40 @@ async def get_latest_model():
         filename=latest_file,
         media_type="application/octet-stream"
     )
+
+@fastapi_app.post("/predict_cloud")
+async def predict_cloud(request: Request):
+    data = await request.json()
+    
+    # window_data memiliki shape (1, 100, 6)
+    window_data = np.array(data["window"], dtype=np.float32) 
+    
+    # ⏱️ Stopwatch mulai (Waktu komputasi murni di server)
+    t0 = time.time()
+    
+    # 1. KONVERSI GRAVITASI (Hanya untuk fitur Accel_x, Accel_y, Accel_z)
+    # [:, :, 0:3] artinya: semua batch, semua 100 timestep, ambil fitur ke 0 sampai 2
+    window_data[:, :, 0:3] = window_data[:, :, 0:3] / 9.80665
+    
+    # 2. NORMALISASI Z-SCORE
+    # Mengurangi dengan mean dan membagi dengan scale
+    # NumPy otomatis mencocokkan dimensi (1, 100, 6) dengan (6,) secara pintar
+    x_norm = (window_data - scaler_mean) / scaler_scale
+    
+    # Opsional: Lakukan Clipping agar sama persis dengan di HP
+    x_norm = np.clip(x_norm, -3.0, 3.0)
+    
+    # 3. PREDIKSI
+    probs = global_model.predict(x_norm, verbose=0)
+    class_id = int(np.argmax(probs, axis=1)[0])
+    
+    t1 = time.time()
+    server_inference_ms = (t1 - t0) * 1000
+
+    return {
+        "class_id": class_id,
+        "server_inference_ms": server_inference_ms
+    }
 
 # ====================================================
 # START SERVER

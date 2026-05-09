@@ -37,7 +37,7 @@ import LiveSensorCharts from './src/components/LiveSensorCharts';
 import performance from 'react-native-performance';
 import { getLocalSampleCount } from './src/har/localDataset';
 import { trainLocalModelNative, exportLocalModelWeights } from './src/har/localTrainer';
-import { requestGlobalModel, getCurrentModelVersion, sendLocalModel } from './src/har/flClient';
+import { requestGlobalModel, getCurrentModelVersion, sendLocalModel, setNetworkStatsListener, predictViaCloud } from './src/har/flClient';
 import { ensureFLAssets } from "./src/har/bootstrapFLAssets";
 
 const RAW_LABELS: string[] = (labelsJson as any)?.classes ?? [];
@@ -343,6 +343,27 @@ function PredictScreen() {
   const [lastTrainAt, setLastTrainAt] = useState<string | null>(null);
   const [trainingLocal, setTrainingLocal] = useState(false);
   const [syncingModel, setSyncingModel] = useState(false);
+  // Tambahkan state ini
+  const [netLatency, setNetLatency] = useState({
+    upload: 0,
+    download: 0,
+    load: 0
+  });
+  const [isCloudMode, setIsCloudMode] = useState(false);
+  const [cloudLatency, setCloudLatency] = useState({
+    server: 0,
+    network: 0
+  });
+  // Pasang listener saat layar dimuat
+  useEffect(() => {
+    setNetworkStatsListener((stats) => {
+      setNetLatency(prev => ({
+        ...prev,
+        download: stats.downloadMs,
+        load: stats.loadMs
+      }));
+    });
+  }, []);
   useEffect(() => {
     (async () => {
       try {
@@ -585,10 +606,11 @@ function PredictScreen() {
         return;
       }
 
-      // 3. kirim ke server FL
-      await sendLocalModel(exported.weights);
+      // 🟢 TANGKAP UPLOAD LATENCY DI SINI
+      const uploadTimeMs = await sendLocalModel(exported.weights) as number;
+      
+      setNetLatency(prev => ({ ...prev, upload: uploadTimeMs }));
 
-      // 4. update UI lokal
       setLastTrainAt(result.trainedAt ?? new Date().toISOString());
       await refreshLocalStats();
 
@@ -743,14 +765,21 @@ function PredictScreen() {
 
           <Card title="Model Performance">
             <View style={{ marginTop: 8 }}>
-              <Text>Model: CNN-LSTM</Text>
+              <Text style={styles.cardKicker}>Realtime Inference</Text>
               <Text>Buffering: {latency.buffering.toFixed(1)} ms</Text>
               <Text>Preprocessing: {latency.preprocessing.toFixed(2)} ms</Text>
               <Text>Inference: {latency.inference.toFixed(2)} ms</Text>
               <Text>Decision: {latency.decision.toFixed(2)} ms</Text>
-              <Text style={{ fontWeight: 'bold' }}>
+              <Text style={{ fontWeight: 'bold', marginBottom: 12 }}>
                 Total: {latency.total.toFixed(2)} ms
               </Text>
+
+              <View style={{ height: 1, backgroundColor: '#E2E8F0', marginVertical: 8 }} />
+
+              <Text style={styles.cardKicker}>Network & FL Sync</Text>
+              <Text>Upload Weights: {netLatency.upload > 0 ? `${netLatency.upload.toFixed(2)} ms` : '-'}</Text>
+              <Text>Download Model: {netLatency.download > 0 ? `${netLatency.download.toFixed(2)} ms` : '-'}</Text>
+              <Text>Load to Memory: {netLatency.load > 0 ? `${netLatency.load.toFixed(2)} ms` : '-'}</Text>
             </View>
           </Card>
 

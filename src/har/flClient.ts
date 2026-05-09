@@ -10,6 +10,14 @@ const socket = io(SERVER_URL, { transports: ["websocket"] });
 
 let currentModelVersion: number | null = null;
 let modelUpdating = false;
+// 1. Tambahkan tipe dan variabel untuk listener di bagian atas
+type NetworkStatsCallback = (stats: { downloadMs: number; loadMs: number }) => void;
+let networkStatsListener: NetworkStatsCallback | null = null;
+
+// 2. Fungsi untuk dipanggil oleh App.tsx agar bisa mendengarkan update
+export function setNetworkStatsListener(callback: NetworkStatsCallback) {
+  networkStatsListener = callback;
+}
 
 socket.on("connect", () => {
   console.log("🌐 Connected to FL server");
@@ -54,14 +62,40 @@ socket.on("global_model", async (data) => {
         }
       }
 
+      // ==========================================
+      // ⏱️ MULAI STOPWATCH DOWNLOAD LATENCY
+      // ==========================================
+      const t0_download = performance.now();
+
       const download = await RNFS.downloadFile({
         fromUrl: modelUrl,
         toFile: destPath,
       }).promise;
 
       if (download.statusCode === 200) {
+        // ==========================================
+        // ⏱️ HENTIKAN STOPWATCH DOWNLOAD LATENCY
+        // ==========================================
+        const t1_download = performance.now();
+        const downloadLatency = t1_download - t0_download;
+        
+        console.log(`⏱️ Download Latency (Terima Model): ${downloadLatency.toFixed(2)} ms`);
         console.log(`✅ Model downloaded: ${destPath}`);
+
+        // --- Opsional: Ukur juga waktu Load ONNX ke Memori ---
+        const t0_load = performance.now();
         await reloadOnnxModel(destPath);
+        const loadLatency = performance.now() - t0_load;
+        console.log(`⏱️ Load ONNX Latency: ${loadLatency.toFixed(2)} ms`);
+        // -----------------------------------------------------
+        // 3. 🟢 PANGGIL LISTENER DI SINI untuk mengirim data ke UI
+        if (networkStatsListener) {
+          networkStatsListener({ 
+            downloadMs: downloadLatency, 
+            loadMs: loadLatency 
+          });
+        }
+
         console.log(`🧠 Model v${version} loaded into ONNX pipeline`);
       } else {
         console.warn("⚠️ Failed downloading ONNX model:", download.statusCode);
@@ -121,6 +155,71 @@ export async function sendLocalModel(weights: number[]) {
     setTimeout(() => reject("Timeout sending weights"), 10000);
   });
 }
+
+// ====================================================
+// CLOUD INFERENCE (EVALUASI ABLASI)
+// ====================================================
+export async function predictViaCloud(windowData: number[][]) {
+  const url = `${SERVER_URL}/predict_cloud`;
+  
+  // ⏱️ Stopwatch mulai (Total Latency Jaringan bolak-balik + Server)
+  const t0 = performance.now();
+
+  try {
+    const response = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ window: windowData }),
+    });
+
+    if (!response.ok) {
+      throw new Error(`HTTP Error! Status: ${response.status}`);
+    }
+
+    const result = await response.json();
+    
+    // ⏱️ Stopwatch berhenti
+    const t1 = performance.now();
+    const totalCloudLatencyMs = t1 - t0;
+    
+    // Hitung waktu jaringan murni (Total waktu dikurangi waktu mikir server)
+    const networkLatencyMs = totalCloudLatencyMs - result.server_inference_ms;
+
+    console.log(`☁️ Cloud Total: ${totalCloudLatencyMs.toFixed(2)} ms`);
+    console.log(`☁️ Server Compute: ${result.server_inference_ms.toFixed(2)} ms`);
+    console.log(`☁️ Network RTT: ${networkLatencyMs.toFixed(2)} ms`);
+
+    // Kembalikan semua metrik agar bisa ditampilkan di layar App.tsx
+    return {
+      success: true,
+      classId: result.class_id,
+      cloudTotalMs: totalCloudLatencyMs,
+      serverMs: result.server_inference_ms,
+      networkMs: networkLatencyMs
+    };
+  } catch (error) {
+    console.error("❌ Cloud prediction failed:", error);
+    return {
+      success: false,
+      classId: -1,
+      cloudTotalMs: 0,
+      serverMs: 0,
+      networkMs: 0
+    };
+  }
+}
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 // export async function sendLocalModel(weights: number[]) {
