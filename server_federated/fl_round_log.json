@@ -40,5 +40,26 @@
     "num_client_updates": 2,
     "vector_len": 41922,
     "onnx_path": "models\\cnn_lstm_har_model_v2.onnx"
+  },
+  {
+    "version": 1,
+    "timestamp": "2026-05-08T23:11:34.267010",
+    "num_client_updates": 2,
+    "vector_len": 41346,
+    "onnx_path": "models\\cnn_lstm_har_model_v1.onnx"
+  },
+  {
+    "version": 1,
+    "timestamp": "2026-05-08T23:33:32.365485",
+    "num_client_updates": 2,
+    "vector_len": 41346,
+    "onnx_path": "models\\cnn_lstm_har_model_mobile_v1.onnx"
+  },
+  {
+    "version": 2,
+    "timestamp": "2026-05-09T09:16:02.860487",
+    "num_client_updates": 2,
+    "vector_len": 41346,
+    "onnx_path": "models\\cnn_lstm_har_model_mobile_v2.onnx"
   }
 ]

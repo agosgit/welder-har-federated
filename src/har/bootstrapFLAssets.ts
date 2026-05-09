@@ -13,8 +13,8 @@ export async function ensureFLAssets() {
   }
 
   const tfliteDest = `${MODELS_DIR}/trainable_har_model.tflite`;
-  const labelMapDest = `${MODELS_DIR}/label_map.json`;
-  const SCALER_DEST = `${RNFS.DocumentDirectoryPath}/models/scaler.json`;
+  const labelMapDest = `${MODELS_DIR}/label_map_nomag.json`;
+  const SCALER_DEST = `${RNFS.DocumentDirectoryPath}/models/scaler_nomag.json`;
 
   if (!(await RNFS.exists(tfliteDest))) {
     await RNFS.copyFileAssets("trainable_har_model.tflite", tfliteDest);
@@ -22,8 +22,8 @@ export async function ensureFLAssets() {
   }
 
   if (!(await RNFS.exists(labelMapDest))) {
-    await RNFS.copyFileAssets("label_map.json", labelMapDest);
-    console.log("✅ Copied label_map.json");
+    await RNFS.copyFileAssets("label_map_nomag.json", labelMapDest);
+    console.log("✅ Copied label_map_nomag.json");
   }
 
   if (!(await RNFS.exists(ONNX_DEST))) {
@@ -32,7 +32,7 @@ export async function ensureFLAssets() {
   }
 
   if (!(await RNFS.exists(SCALER_DEST))) {
-    await RNFS.copyFileAssets("scaler.json", SCALER_DEST);
-    console.log("✅ Copied scaler.json");
+    await RNFS.copyFileAssets("scaler_nomag.json", SCALER_DEST);
+    console.log("✅ Copied scaler_nomag.json");
 }
 }

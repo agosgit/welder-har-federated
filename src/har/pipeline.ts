@@ -5,6 +5,7 @@ import { Platform } from 'react-native';
 import { type Window } from './features';
 import performance from 'react-native-performance';
 
+// const MODEL_FILE = 'cnn_lstm_har_model_mobile.onnx';
 const MODEL_FILE = 'cnn_lstm_har_model_mobile.onnx';
 
 let session: InferenceSession | null = null;
@@ -55,7 +56,7 @@ let cachedScaler: { mean: number[], scale: number[] } | null = null;
 async function getScalerValues() {
   if (cachedScaler) return cachedScaler; // Ambil dari cache jika sudah ada
 
-  const path = `${RNFS.DocumentDirectoryPath}/models/scaler.json`;
+  const path = `${RNFS.DocumentDirectoryPath}/models/scaler_nomag.json`;
   try {
     const content = await RNFS.readFile(path, 'utf8');
     const scaler = JSON.parse(content);
@@ -70,40 +71,71 @@ async function getScalerValues() {
   }
 }
 
+
 export async function predictWindow(
   win: Window
 ): Promise<{ classId: number; conf: number; probs: number[] }> {
   const sess = await ensureSession();
   const scaler = await getScalerValues();
+  if (!scaler) {
+    throw new Error("Scaler not loaded");
+  }
+
+  console.log("📊 Scaler Mean Accel_X:", scaler.mean[0], "| Scale:", scaler.scale[0]);
 
   if (!scaler) throw new Error("Scaler data tidak ditemukan!");
 
+  // 1. Deteksi otomatis apakah scaler dilatih dengan 6 atau 9 fitur
+  const numFeatures = scaler.mean.length;
+  if (numFeatures !== 6 && numFeatures !== 9) {
+    throw new Error(`Scaler memiliki ${numFeatures} fitur, tidak sesuai ekspektasi (6 atau 9).`);
+  }
+
   const interleavedData = [];
   
-  // Looping sebanyak 100 timesteps
   for (let i = 0; i < 100; i++) {
-    // 1. Ambil baris data mentah (HANYA 6 FITUR, Magnetometer dihapus)
-    const rawRow = [
+    // Ambil data mentah (default 9 fitur)
+    let rawRow = [
       win.accel_x[i], win.accel_y[i], win.accel_z[i],
       win.gyro_x[i],  win.gyro_y[i],  win.gyro_z[i]
+      // win.mag_x[i],   win.mag_y[i],   win.mag_z[i]
     ];
-    
-    // 2. Clipping & Normalisasi
+
+    // Jika model Python HANYA dilatih dengan 6 fitur, potong array-nya
+    if (numFeatures === 6) {
+      rawRow = rawRow.slice(0, 6);
+    }
+
     const normalizedRow = rawRow.map((val, idx) => {
-      // Pangkas nilai ekstrem (Safety Net)
-      const clippedVal = Math.max(-CLIPPING_THRESHOLD, Math.min(CLIPPING_THRESHOLD, val));
-      // Z-Score Normalization
-      return (clippedVal - scaler.mean[idx]) / scaler.scale[idx];
+      // Safety net untuk NaN/Undefined dari sensor
+      if (val === undefined || isNaN(val)) {
+        return 0; 
+      }
+      if (idx < 3) {
+        val = val / 9.80665;
+      }
+
+      // OPTIONAL: Buka komentar di bawah ini JIKA dataset Python menggunakan satuan "g" bukan "m/s^2"
+      // if (idx < 3) { // Hanya index 0, 1, 2 (Accelerometer)
+      //   val = val / 9.80665; 
+      // }
+
+      // Normalisasi & Clipping
+      const zScore = (val - scaler.mean[idx]) / scaler.scale[idx];
+      return Math.max(-CLIPPING_THRESHOLD, Math.min(CLIPPING_THRESHOLD, zScore));
     });
 
-    if (i === 0) console.log("Hasil Normalisasi Pertama (6 Fitur):", normalizedRow);
+    // Debugging krusial untuk baris pertama saja
+    if (i === 0) {
+      console.log(`[DEBUG] Raw Row 0:`, rawRow);
+      console.log(`[DEBUG] Norm Row 0:`, normalizedRow);
+    }
 
-    // 3. Masukkan ke array utama
     interleavedData.push(...normalizedRow);
   }
 
-  // Sekarang data sudah [1, 100, 6] 
-  const tensor = new Tensor("float32", Float32Array.from(interleavedData), [1, 100, 6]);
+  // 2. Shape tensor disesuaikan dinamis dengan jumlah fitur scaler
+  const tensor = new Tensor("float32", Float32Array.from(interleavedData), [1, 100, numFeatures]);
   
   const inputName = sess.inputNames[0];
   const outputName = sess.outputNames[0];
@@ -127,7 +159,7 @@ export async function predictWindow(
 export async function benchmarkModel(iterations = 30) {
   const sess = await ensureSession();
 
-  // Update dummy data menjadi 6 fitur
+  // Update dummy data menjadi 9 fitur
   const dummyData = new Float32Array(100 * 6).fill(0);
   const tensor = new Tensor("float32", dummyData, [1, 100, 6]);
 
@@ -146,6 +178,81 @@ export async function benchmarkModel(iterations = 30) {
 
   return { mean, sd, iterations };
 }
+
+export async function reloadOnnxModel(path?: string) {
+  const modelPath = path ?? `${RNFS.DocumentDirectoryPath}/cnn_lstm_har_model_mobile.onnx`;
+  console.log("🧠 Reloading model from:", modelPath);
+
+  const normalizedPath = modelPath.startsWith("file://") ? modelPath : `file://${modelPath}`;
+  const newSession = await InferenceSession.create(normalizedPath);
+
+  session = newSession;
+  currentModel = newSession;
+
+  console.log("✅ Model reloaded successfully");
+}
+
+export function getCurrentModel() {
+  return currentModel;
+}
+
+// export async function predictWindow(
+//   win: Window
+// ): Promise<{ classId: number; conf: number; probs: number[] }> {
+//   const sess = await ensureSession();
+//   const scaler = await getScalerValues();
+
+//   if (!scaler) throw new Error("Scaler data tidak ditemukan!");
+
+//   const interleavedData = [];
+  
+//   // Looping sebanyak 100 timesteps
+//   for (let i = 0; i < 100; i++) {
+//     // 1. Ambil baris data mentah (HANYA 6 FITUR, Magnetometer dihapus)
+//     const rawRow = [
+//       win.accel_x[i], win.accel_y[i], win.accel_z[i],
+//       win.gyro_x[i],  win.gyro_y[i],  win.gyro_z[i],
+//       win.mag_x[i],   win.mag_y[i],   win.mag_z[i]
+//     ];
+    
+//     // 2. Normalisasi & Clipping yang BENAR
+//     const normalizedRow = rawRow.map((val, idx) => {
+//       // Hitung Z-Score (Normalisasi) DULU menggunakan scaler dari Python
+//       const zScore = (val - scaler.mean[idx]) / scaler.scale[idx];
+      
+//       // Baru lakukan Clipping (Safety Net) pada hasil normalisasinya
+//       return Math.max(-CLIPPING_THRESHOLD, Math.min(CLIPPING_THRESHOLD, zScore));
+//     });
+
+//     if (i === 0) console.log("Hasil Normalisasi Pertama (9 Fitur):", normalizedRow);
+
+//     // 3. Masukkan ke array utama
+//     interleavedData.push(...normalizedRow);
+//   }
+
+//   // Sekarang data sudah [1, 100, 6] 
+//   const tensor = new Tensor("float32", Float32Array.from(interleavedData), [1, 100, 9]);
+  
+//   const inputName = sess.inputNames[0];
+//   const outputName = sess.outputNames[0];
+
+//   const out = await sess.run({ [inputName]: tensor });
+
+//   const probT = out[outputName];
+//   const probs = Array.from(probT.data as Float32Array);
+
+//   let imax = 0;
+//   let pmax = probs[0];
+//   for (let i = 1; i < probs.length; i++) {
+//     if (probs[i] > pmax) {
+//       pmax = probs[i];
+//       imax = i;
+//     }
+//   }
+
+//   return { classId: imax, conf: pmax, probs };
+// }
+
 // export async function predictWindow(
 //   win: Window
 // ): Promise<{ classId: number; conf: number; probs: number[] }> {
@@ -280,22 +387,7 @@ export async function benchmarkModel(iterations = 30) {
 // }
 
 
-export async function reloadOnnxModel(path?: string) {
-  const modelPath = path ?? `${RNFS.DocumentDirectoryPath}/cnn_lstm_har_model_mobile.onnx`;
-  console.log("🧠 Reloading model from:", modelPath);
 
-  const normalizedPath = modelPath.startsWith("file://") ? modelPath : `file://${modelPath}`;
-  const newSession = await InferenceSession.create(normalizedPath);
-
-  session = newSession;
-  currentModel = newSession;
-
-  console.log("✅ Model reloaded successfully");
-}
-
-export function getCurrentModel() {
-  return currentModel;
-}
 
 
 //src//har//pipeline.ts

@@ -1,0 +1,19 @@
+{
+  "class_to_index": {
+    "Berbaring Aktif": 0,
+    "Berbaring Tidak Aktif": 1,
+    "Berdiri Aktif": 2,
+    "Berdiri Tidak Aktif": 3,
+    "Duduk Aktif": 4,
+    "Duduk Tidak Aktif": 5
+  },
+  "index_to_class": {
+    "0": "Berbaring Aktif",
+    "1": "Berbaring Tidak Aktif",
+    "2": "Berdiri Aktif",
+    "3": "Berdiri Tidak Aktif",
+    "4": "Duduk Aktif",
+    "5": "Duduk Tidak Aktif"
+  },
+  "num_classes": 6
+}

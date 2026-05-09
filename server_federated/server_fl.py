@@ -130,7 +130,7 @@ def export_onnx_from_keras(model: tf.keras.Model, version: int) -> str:
             "tf2onnx belum terinstall. Install dulu: pip install tf2onnx"
         ) from e
 
-    onnx_name = f"cnn_lstm_har_model_v{version}.onnx"
+    onnx_name = f"cnn_lstm_har_model_mobile_v{version}.onnx"
     onnx_path = os.path.join(MODEL_DIR, onnx_name)
 
     # patch kompatibilitas untuk Keras 3 + tf2onnx
@@ -250,6 +250,9 @@ async def send_weights(sid, data):
             f"📦 Received weights from {sid} (len={len(weights)}) | "
             f"buffered={len(client_updates)}"
         )
+        await sio.emit("weights_received", {"status": "ok"}, to=sid)
+        
+        print(f"📦 Received weights from {sid} (len={len(weights)}) | buffered={len(client_updates)}")
 
         if len(client_updates) < MIN_CLIENT_UPDATES:
             await sio.emit(

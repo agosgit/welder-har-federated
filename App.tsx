@@ -386,46 +386,107 @@ function PredictScreen() {
   }, []);
 
   useEffect(() => {
+    // ================= VALIDASI =================
     if (!(modelReady && inferOn && rate.hz === 50)) {
-      samplerRef.current?.stop(); samplerRef.current = null; setPredText('-'); setProbs(null); return;
+      samplerRef.current?.stop();
+      samplerRef.current = null;
+
+      setPredText("-");
+      setProbs(null);
+
+      return;
     }
+
+    // stop sampler sebelumnya
     samplerRef.current?.stop();
+
+    // ================= SETTINGS =================
+    const fs = 50;
+    const windowSec = 2;
+    const overlap = 0.75;
+
+    // latency akibat window overlap
+    const bufferingMs =
+      windowSec * (1 - overlap) * 1000;
+
+    // guard supaya inferensi tidak bertumpuk
+    let inferBusy = false;
+
+    // ================= SAMPLER =================
     samplerRef.current = new RealtimeSampler({
-      fs: 50, windowSec: 2, overlap: 0.75,
+      fs,
+      windowSec,
+      overlap,
+
+      // ==================================================
+      // WINDOW CALLBACK
+      // ==================================================
       onWindow: async (win: MLWindow) => {
+
+        // skip jika inferensi sebelumnya belum selesai
+        if (inferBusy) return;
+
+        inferBusy = true;
+
         try {
           setCurrentWindow(win);
-          const bufferingMs = 1000; // window 2s overlap 50%
 
           // ================= PREPROCESSING =================
           const tPre0 = performance.now();
 
-          const processed = win; // kalau belum ada preprocessing
+          // preprocessing bisa ditambahkan di sini:
+          // - normalization
+          // - filtering
+          // - FFT
+          // - feature extraction
 
-          const preprocessingMs = performance.now() - tPre0;
+          const processed = win;
+
+          const preprocessingMs =
+            performance.now() - tPre0;
 
           // ================= INFERENCE =================
           const tInf0 = performance.now();
 
-          const { classId, conf, probs } = await predictWindow(processed);
+          const {
+            classId,
+            conf,
+            probs
+          } = await predictWindow(processed);
 
-          const inferenceMs = performance.now() - tInf0;
+          const inferenceMs =
+            performance.now() - tInf0;
 
           // ================= DECISION =================
           const tDec0 = performance.now();
 
-          const idx =
-            (classId >= 0 && classId < CLASS_NAMES.length)
-              ? classId
-              : Math.max(0, Math.min(classId - 1, CLASS_NAMES.length - 1));
+          // validasi index class
+          if (
+            classId < 0 ||
+            classId >= CLASS_NAMES.length
+          ) {
+            throw new Error(
+              `Invalid classId: ${classId}`
+            );
+          }
 
-          const decisionMs = performance.now() - tDec0;
+          const idx = classId;
 
-          const totalMs =
-            bufferingMs +
+          const decisionMs =
+            performance.now() - tDec0;
+
+          // ================= LATENCY =================
+
+          // latency komputasi
+          const computeMs =
             preprocessingMs +
             inferenceMs +
             decisionMs;
+
+          // total latency realtime
+          const totalMs =
+            bufferingMs +
+            computeMs;
 
           setLatency({
             buffering: bufferingMs,
@@ -435,30 +496,51 @@ function PredictScreen() {
             total: totalMs,
           });
 
-          setPredText(`${CLASS_NAMES[idx]} (${(conf * 100).toFixed(1)}%)`);
+          // ================= OUTPUT =================
+          setPredText(
+            `${CLASS_NAMES[idx]} (${(conf * 100).toFixed(1)}%)`
+          );
+
           setProbs(probs);
 
         } catch (e) {
-          setPredText('-');
+          console.error("Inference error:", e);
+
+          setPredText("-");
           setProbs(null);
+
+        } finally {
+          inferBusy = false;
         }
       },
 
-
-
+      // ==================================================
+      // REALTIME HZ
+      // ==================================================
       onHz: (h) => {
-        hzRef.current = h;  // simpan di ref, tidak memicu re-render
+        // simpan ke ref tanpa re-render
+        hzRef.current = h;
       },
 
+      // ==================================================
+      // REALTIME SENSOR
+      // ==================================================
       onLatest: (s) => {
         accRef.current = s.acc;
         gyrRef.current = s.gyr;
         magRef.current = s.mag;
       },
-
     });
+
+    // ================= START =================
     samplerRef.current.start();
-    return () => { samplerRef.current?.stop(); samplerRef.current = null; };
+
+    // ================= CLEANUP =================
+    return () => {
+      samplerRef.current?.stop();
+      samplerRef.current = null;
+    };
+
   }, [modelReady, inferOn, rate.hz]);
 
   const refreshLocalStats = async () => {

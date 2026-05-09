@@ -18,7 +18,7 @@ class FLTrainerModule(private val reactCtx: ReactApplicationContext)
 
   companion object {
     private const val WINDOW_SIZE = 100
-    private const val NUM_FEATURES = 9
+    private const val NUM_FEATURES = 6
   }
 
   @ReactMethod
@@ -278,8 +278,7 @@ class FLTrainerModule(private val reactCtx: ReactApplicationContext)
   private fun windowToTimeMajor(windowObj: JSONObject): Array<FloatArray> {
     val keys = listOf(
       "accel_x", "accel_y", "accel_z",
-      "gyro_x", "gyro_y", "gyro_z",
-      "mag_x", "mag_y", "mag_z"
+      "gyro_x", "gyro_y", "gyro_z"
     )
 
     val out = Array(WINDOW_SIZE) { FloatArray(NUM_FEATURES) }
@@ -297,8 +296,7 @@ class FLTrainerModule(private val reactCtx: ReactApplicationContext)
   private fun windowReadableMapToTimeMajor(windowMap: ReadableMap): Array<FloatArray> {
     val keys = listOf(
       "accel_x", "accel_y", "accel_z",
-      "gyro_x", "gyro_y", "gyro_z",
-      "mag_x", "mag_y", "mag_z"
+      "gyro_x", "gyro_y", "gyro_z"
     )
 
     val out = Array(WINDOW_SIZE) { FloatArray(NUM_FEATURES) }

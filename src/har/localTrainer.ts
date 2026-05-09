@@ -25,7 +25,7 @@ const { FLTrainer } = NativeModules;
 
 const DATASET_PATH = `${RNFS.DocumentDirectoryPath}/fl_data/local_samples.json`;
 const TRAINING_MODEL_PATH = `${RNFS.DocumentDirectoryPath}/models/trainable_har_model.tflite`;
-const LABEL_MAP_PATH = `${RNFS.DocumentDirectoryPath}/models/label_map.json`;
+const LABEL_MAP_PATH = `${RNFS.DocumentDirectoryPath}/models/label_map_nomag.json`;
 
 async function ensureDirs() {
   const dirs = [

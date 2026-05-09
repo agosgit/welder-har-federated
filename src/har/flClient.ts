@@ -1,9 +1,11 @@
 // flClient.ts
 import io from "socket.io-client";
 import RNFS from "react-native-fs";
+import performance from 'react-native-performance';
+
 import { reloadOnnxModel } from "./pipeline";
 
-const SERVER_URL = "http://192.168.1.9:5000";
+const SERVER_URL = "http://10.60.157.150:5000";
 const socket = io(SERVER_URL, { transports: ["websocket"] });
 
 let currentModelVersion: number | null = null;
@@ -99,13 +101,36 @@ export async function requestGlobalModel() {
 }
 
 export async function sendLocalModel(weights: number[]) {
-  if (!Array.isArray(weights) || weights.length === 0) {
-    throw new Error("Local model weights kosong.");
-  }
+  return new Promise((resolve, reject) => {
+    const t0 = performance.now(); // Mulai Stopwatch Upload
 
-  socket.emit("send_weights", { weights });
-  console.log(`📤 Local trained weights sent to server (len=${weights.length})`);
+    // Dengarkan konfirmasi dari server
+    socket.once("weights_received", () => {
+      const t1 = performance.now(); // Hentikan Stopwatch Upload
+      const uploadLatency = t1 - t0;
+      console.log(`⏱️ Upload Latency (Kirim Bobot): ${uploadLatency.toFixed(2)} ms`);
+      
+      // Opsional: Simpan ke state/database untuk dianalisis nanti
+      resolve(uploadLatency); 
+    });
+
+    // Kirim bobot ke server
+    socket.emit("send_weights", { weights });
+    
+    // Timeout safety jika server mati
+    setTimeout(() => reject("Timeout sending weights"), 10000);
+  });
 }
+
+
+// export async function sendLocalModel(weights: number[]) {
+//   if (!Array.isArray(weights) || weights.length === 0) {
+//     throw new Error("Local model weights kosong.");
+//   }
+
+//   socket.emit("send_weights", { weights });
+//   console.log(`📤 Local trained weights sent to server (len=${weights.length})`);
+// }
 
 
 
